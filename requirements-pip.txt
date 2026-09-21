@@ -1,0 +1,15 @@
+# Optional reference for pip-only setup (your base env already has most of these).
+# Only install missing pieces, e.g.: pip install pynvml requests pandas scipy scikit-learn matplotlib
+
+pynvml
+requests
+pandas
+scipy
+scikit-learn
+matplotlib
+opencv-python
+albumentations
+flask
+tqdm
+pillow
+numpy
