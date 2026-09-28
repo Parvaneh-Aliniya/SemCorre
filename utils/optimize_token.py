@@ -447,11 +447,25 @@ def visualize_image_with_points(image, point, name, save_folder="outputs"):
     ax.set_axis_off()
     fig.add_axes(ax)
 
-    plt.imshow(image, aspect="auto")
-
-    if point is not None:
-        # plot point on image
-        plt.scatter(point[0].cpu(), point[1].cpu(), s=20, marker="o", c="r")
+    heatmap_mode = (hasattr(image, "ndim") and image.ndim == 2) or (
+        hasattr(image, "ndim") and image.ndim == 3 and image.shape[-1] == 1
+    )
+    if heatmap_mode:
+        if image.ndim == 3:
+            image = image.squeeze(-1)
+        vmin, vmax = float(np.min(image)), float(np.max(image))
+        im = ax.imshow(image, aspect="auto", cmap="viridis", vmin=vmin, vmax=vmax)
+        cbar = fig.colorbar(im, ax=ax, fraction=0.046, pad=0.02)
+        cbar.set_label(f"min={vmin:.4g}  max={vmax:.4g}", fontsize=9)
+        ax.set_title(f"{name}  [{vmin:.4g}, {vmax:.4g}]", fontsize=10)
+        if point is not None:
+            px = point[0].detach().cpu() if hasattr(point[0], "detach") else point[0]
+            py = point[1].detach().cpu() if hasattr(point[1], "detach") else point[1]
+            ax.scatter(px, py, s=40, marker="o", c="r", edgecolors="white", linewidths=0.6)
+    else:
+        ax.imshow(image, aspect="auto")
+        if point is not None:
+            ax.scatter(point[0].cpu(), point[1].cpu(), s=20, marker="o", c="r")
 
     plt.savefig(f"{save_folder}/{name}.png", dpi=200)
     plt.close()
@@ -470,6 +484,48 @@ def gaussian_circle(pos, size=64, sigma=16, device="cuda"):
     dist_sq = -1 * dist_sq / (2.0 * sigma**2.0)
     gaussian = torch.exp(dist_sq)
     return gaussian
+
+
+def _as_xyxy(box):
+    if box is None:
+        return None
+    x1, y1, x2, y2 = (float(box[0]), float(box[1]), float(box[2]), float(box[3]))
+    if x2 < x1:
+        x1, x2 = x2, x1
+    if y2 < y1:
+        y1, y2 = y2, y1
+    return (x1, y1, x2, y2)
+
+
+def _flip_box_x(box, width):
+    x1, y1, x2, y2 = box
+    return (float(width) - x2, y1, float(width) - x1, y2)
+
+
+def _box_in_crop_norm(box, x_start, y_start, crop_width, crop_height):
+    x1, y1, x2, y2 = box
+    return (
+        (x1 - x_start) / crop_width,
+        (y1 - y_start) / crop_height,
+        (x2 - x_start) / crop_width,
+        (y2 - y_start) / crop_height,
+    )
+
+
+def roi_box_mask(box_xyxy_norm, size=64, device="cuda"):
+    """Binary GT: 1 inside the box, 0 elsewhere.
+
+    box_xyxy_norm is (x1, y1, x2, y2) in [0, 1] of the current crop.
+    """
+    box = _as_xyxy(box_xyxy_norm)
+    if box is None:
+        return torch.zeros((size, size), device=device)
+    x1, y1, x2, y2 = box
+    ys = torch.arange(size, device=device, dtype=torch.float32)
+    xs = torch.arange(size, device=device, dtype=torch.float32)
+    yy, xx = torch.meshgrid(ys, xs, indexing="ij")
+    inside = (xx >= x1 * size) & (xx <= x2 * size) & (yy >= y1 * size) & (yy <= y2 * size)
+    return inside.float()
 
 
 def crop_image(image, pixel, crop_percent=80, margin=0.15):
@@ -544,6 +600,8 @@ def optimize_prompt(
     sigma=32,
     flip_prob=0.5,
     crop_percent=80,
+    gt_mode="gaussian",
+    gt_box_xyxy=None,
 ):
     # if image is a torch.tensor, convert to numpy
     if type(image) == torch.Tensor:
@@ -561,31 +619,32 @@ def optimize_prompt(
     import time
 
     start = time.time()
+    img_h, img_w = image.shape[:2]
+    box512 = _as_xyxy(gt_box_xyxy)
+    mode = str(gt_mode or "gaussian").lower().replace("-", "_")
+    use_roi_box = mode in {"roi", "roi_box", "box", "binary"} and box512 is not None
+    if mode in {"roi", "roi_box", "box", "binary"} and box512 is None:
+        print("gt_mode=roi_box but no source ROI box; falling back to Gaussian at the point")
 
     for iteration in range(num_steps):
         with torch.no_grad():
-            if np.random.rand() > flip_prob:
-                cropped_image, cropped_pixel, _, _, _, _ = crop_image(
-                    image, pixel_loc * 512, crop_percent=crop_percent
-                )
-
-                latent = image2latent(ldm, cropped_image, device)
-
-                _pixel_loc = cropped_pixel.clone()
+            do_flip = np.random.rand() <= flip_prob
+            if do_flip:
+                work_image = np.flip(image, axis=1).copy()
+                work_pixel = pixel_loc.clone()
+                work_pixel[0] = 1 - work_pixel[0]
+                work_box = _flip_box_x(box512, img_w) if box512 is not None else None
             else:
-                image_flipped = np.flip(image, axis=1).copy()
+                work_image = image
+                work_pixel = pixel_loc
+                work_box = box512
 
-                pixel_loc_flipped = pixel_loc.clone()
-                # flip pixel loc
-                pixel_loc_flipped[0] = 1 - pixel_loc_flipped[0]
+            cropped_image, cropped_pixel, y_start, crop_height, x_start, crop_width = crop_image(
+                work_image, work_pixel * 512, crop_percent=crop_percent
+            )
 
-                cropped_image, cropped_pixel, _, _, _, _ = crop_image(
-                    image_flipped, pixel_loc_flipped * 512, crop_percent=crop_percent
-                )
-
-                _pixel_loc = cropped_pixel.clone()
-
-                latent = image2latent(ldm, cropped_image, device)
+            _pixel_loc = cropped_pixel.clone()
+            latent = image2latent(ldm, cropped_image, device)
 
         noisy_image = ldm.scheduler.add_noise(
             latent, torch.rand_like(latent), ldm.scheduler.timesteps[noise_level]
@@ -612,9 +671,19 @@ def optimize_prompt(
         # divide by the mean along the dim=1
         attention_maps = torch.mean(attention_maps, dim=1)
 
-        gt_maps = gaussian_circle(
-            _pixel_loc, size=upsample_res, sigma=sigma, device=device
-        )
+        if use_roi_box and work_box is not None:
+            box_norm = _box_in_crop_norm(
+                work_box, x_start, y_start, crop_width, crop_height
+            )
+            gt_maps = roi_box_mask(box_norm, size=upsample_res, device=device)
+            if float(gt_maps.sum()) <= 0:
+                gt_maps = gaussian_circle(
+                    _pixel_loc, size=upsample_res, sigma=sigma, device=device
+                )
+        else:
+            gt_maps = gaussian_circle(
+                _pixel_loc, size=upsample_res, sigma=sigma, device=device
+            )
 
         gt_maps = gt_maps.reshape(1, -1).repeat(num_maps, 1)
         attention_maps = attention_maps.reshape(num_maps, -1)

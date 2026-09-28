@@ -29,7 +29,7 @@ if __name__ == "__main__":
     # Dataset
     parser.add_argument('--datapath', type=str, default='../Datasets_CATs')
     parser.add_argument('--benchmark', type=str,
-                        choices=['spair', 'pfwillow', 'cubs', 'custom'], default='custom')
+                        choices=['spair', 'pfwillow', 'cubs', 'custom', 'mammo_roi'], default='custom')
     parser.add_argument('--thres', type=str, default='auto',
                         choices=['auto', 'img', 'bbox'])
     parser.add_argument('--sub_class', type=str, default="all", choices=['aeroplane', 'bicycle', 'bird', 'boat', 'bottle', 'bus',

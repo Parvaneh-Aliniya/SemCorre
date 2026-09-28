@@ -1,0 +1,12 @@
+# exp5  tagged lat+view chains; Vista uses ALL exams of that view
+
+11861206  L  CC  (patient_11861206_CC_and_mlo_left)
+11861206  L  MLO  (patient_11861206_CC_and_mlo_left)
+22359092  L  MLO  (patient_22359092_l_mlo)
+25403261  L  CC  (patient_25403261_lcc)
+33600940  R  MLO  (patient_33600940_r_mlo)
+46673294  L  MLO  (patient_46673294_l_mlo)
+54176985  L  CC  (patient_54176985_all_four)
+54176985  L  MLO  (patient_54176985_all_four)
+54176985  R  CC  (patient_54176985_all_four)
+54176985  R  MLO  (patient_54176985_all_four)

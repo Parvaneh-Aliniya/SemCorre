@@ -95,7 +95,12 @@ class CorrespondenceDataset(Dataset):
                         'Layout/large',
                         'JPEGImages',
                         'PairAnnotation',
-                        'bbox')
+                        'bbox'),
+            'mammo_roi': ('',
+                          '',
+                          'images',
+                          '',
+                          'img'),
         }
 
         # Directory path for train, val, or test splits

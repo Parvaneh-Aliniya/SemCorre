@@ -10,6 +10,7 @@ from . import pfwillow
 from . import spair
 from . import cub2011
 from . import custom_image
+from . import mammo_roi
 
 
 def load_dataset(benchmark, datapath, thres, device, split='test', augmentation=False, feature_size=16, sub_class = "all", item_index=-1):
@@ -21,6 +22,7 @@ def load_dataset(benchmark, datapath, thres, device, split='test', augmentation=
         'spair': spair.SPairDataset,
         'cubs': cub2011.CUBDataset,
         'custom': custom_image.CustomDataset,
+        'mammo_roi': mammo_roi.MammoROIDataset,
     }
 
     dataset = correspondence_benchmark.get(benchmark)
