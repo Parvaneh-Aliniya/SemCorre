@@ -49,9 +49,10 @@ EXP_DIR = "exp3_cross_patient"
 
 
 def load_display_chw(path: Path) -> torch.Tensor:
-    img = Image.open(path).convert("RGB")
+    with Image.open(path) as im:
+        img = im.convert("RGB")
     w, h = img.size
-    if h > RES + 20:
+    if w <= RES + 40 and RES + 40 < h <= RES + BANNER_H + 150:
         img = img.crop((0, BANNER_H, w, min(BANNER_H + RES, h)))
     if img.size != (RES, RES):
         img = img.resize((RES, RES), Image.BILINEAR)

@@ -106,7 +106,9 @@ def resolve_image_path(
             pid = m.group(1)
             hits = list((pack_root / f"patient_{pid}").rglob(tail))
             if hits:
-                return hits[0]
+                if len(hits) == 1:
+                    return hits[0]
+                return _pick_pack_image_hit(hits, path_str)
     if reviews_root is not None:
         m = re.search(r"patient_(\d+)", path_str.replace("\\", "/"))
         if not m:
@@ -139,11 +141,40 @@ def resolve_image_path(
     raise FileNotFoundError(f"Cannot resolve image: {path_str}")
 
 
+def _score_pack_image_hit(hit: Path, path_str: str) -> tuple:
+    s = str(hit).replace("\\", "/").lower()
+    bad = any(
+        x in s
+        for x in (
+            "overlays_512",
+            "correspondence",
+            "chain_overview",
+            "step16",
+            "batch_experiments",
+            "semcorre_batch",
+        )
+    )
+    is_exam = bool(re.search(r"/\d{4}-\d{2}-\d{2}/[lr]_(cc|mlo)\.png", s))
+    return (bad, not is_exam, len(s))
+
+
+def _pick_pack_image_hit(hits: list[Path], path_str: str) -> Path:
+    norm = path_str.replace("\\", "/")
+    m = re.search(r"/(\d{4}-\d{2}-\d{2})/([LR])_([A-Z]+)\.png", norm, re.I)
+    if m:
+        want = f"{m.group(1)}/{m.group(2).upper()}_{m.group(3).upper()}.png".lower()
+        for h in hits:
+            if want in str(h).replace("\\", "/").lower():
+                return h
+    return min(hits, key=lambda h: _score_pack_image_hit(h, path_str))
+
+
 def load_display_chw(path: Path) -> torch.Tensor:
-    """512×512 display tensor; never materialize full wide review PNGs in memory."""
-    img = Image.open(path).convert("RGB")
+    """512×512 display matching batch load_image_chw (full PNG stretch to 512)."""
+    with Image.open(path) as im:
+        img = im.convert("RGB")
     w, h = img.size
-    if h > RES + 20:
+    if w <= RES + 40 and RES + 40 < h <= RES + BANNER_H + 150:
         img = img.crop((0, BANNER_H, w, min(BANNER_H + RES, h)))
     if img.size != (RES, RES):
         img = img.resize((RES, RES), Image.BILINEAR)
