@@ -22,6 +22,8 @@ from typing import Optional
 
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
+from matplotlib.lines import Line2D
+from matplotlib.patches import FancyArrowPatch
 import numpy as np
 import torch
 from PIL import Image
@@ -289,6 +291,70 @@ COLOR_FORWARD_LINE = "#FF8C00"
 ROI_LINEWIDTH = 3.5
 
 
+def _add_direction_arrow(
+    ax,
+    x0: float,
+    y0: float,
+    x1: float,
+    y1: float,
+    *,
+    color: str,
+    linewidth: float = 4,
+    linestyle: str = "solid",
+    zorder: int = 4,
+    head_scale: float = 22,
+    tail_pad: float = 6,
+    head_pad: float = 12,
+) -> FancyArrowPatch | None:
+    """Directed correspondence arrow in image (data) coordinates."""
+    dx, dy = x1 - x0, y1 - y0
+    length = math.hypot(dx, dy)
+    if length < 1e-3:
+        return None
+    ux, uy = dx / length, dy / length
+    start = (x0 + ux * tail_pad, y0 + uy * tail_pad)
+    end = (x1 - ux * head_pad, y1 - uy * head_pad)
+    if math.hypot(end[0] - start[0], end[1] - start[1]) < 1e-3:
+        start, end = (x0, y0), (x1, y1)
+    arrow = FancyArrowPatch(
+        start,
+        end,
+        arrowstyle="-|>",
+        mutation_scale=head_scale,
+        linewidth=linewidth,
+        linestyle=linestyle,
+        color=color,
+        zorder=zorder,
+        shrinkA=0,
+        shrinkB=0,
+    )
+    ax.add_patch(arrow)
+    return arrow
+
+
+def _arrow_legend_handles() -> list[Line2D]:
+    return [
+        Line2D(
+            [0],
+            [0],
+            color=COLOR_FORWARD_LINE,
+            lw=4,
+            marker=">",
+            markersize=9,
+            label="Forward",
+        ),
+        Line2D(
+            [0],
+            [0],
+            color=COLOR_BACK_LINE,
+            lw=4,
+            marker=">",
+            markersize=9,
+            label="Back",
+        ),
+    ]
+
+
 def format_iou_line(iou: float | None) -> str:
     if iou is None:
         return "IoU pred vs GT —"
@@ -524,7 +590,9 @@ def save_correspondence_figure(
     ax.imshow(display, aspect="equal")
     ax.set_xlim(0, 1024)
     ax.set_ylim(512, 0)
-    ax.plot([sx, tx + x_off], [sy, ty], color=COLOR_FORWARD_LINE, linewidth=line_width, zorder=4)
+    _add_direction_arrow(
+        ax, sx, sy, tx + x_off, ty, color=COLOR_FORWARD_LINE, linewidth=line_width, zorder=4
+    )
     ax.scatter([sx, tx + x_off], [sy, ty], c=COLOR_FORWARD_LINE, s=40, zorder=5)
 
     src_boxes = list(src_all_gt_boxes or [])
@@ -713,15 +781,11 @@ def save_bidirectional_pair_figure(
     ax.set_xlim(0, 1024)
     ax.set_ylim(512, 0)
 
-    ax.plot([sx, tx + x_off], [sy, ty], color=COLOR_FORWARD_LINE, linewidth=4, zorder=4, label="Forward")
-    ax.plot(
-        [tx + x_off, bx],
-        [ty, by],
-        color=COLOR_BACK_LINE,
-        linewidth=4,
-        zorder=4,
-        linestyle="--",
-        label="Back",
+    _add_direction_arrow(
+        ax, sx, sy, tx + x_off, ty, color=COLOR_FORWARD_LINE, linewidth=4, zorder=4
+    )
+    _add_direction_arrow(
+        ax, tx + x_off, ty, bx, by, color=COLOR_BACK_LINE, linewidth=4, zorder=4
     )
     ax.scatter(
         [sx, tx + x_off, bx],
@@ -763,7 +827,15 @@ def save_bidirectional_pair_figure(
         ax.plot([gx + x_off, tx + x_off], [gy, ty], color="cyan", linewidth=1.6, linestyle=":", zorder=8)
 
     ax.set_axis_off()
-    ax.legend(loc="lower center", bbox_to_anchor=(0.5, -0.06), ncol=5, fontsize=9, frameon=False)
+    roi_handles, roi_labels = ax.get_legend_handles_labels()
+    ax.legend(
+        handles=_arrow_legend_handles() + roi_handles,
+        loc="lower center",
+        bbox_to_anchor=(0.5, -0.06),
+        ncol=5,
+        fontsize=9,
+        frameon=False,
+    )
     fig.savefig(save_path, dpi=200, bbox_inches="tight")
     plt.close(fig)
 
