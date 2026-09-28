@@ -22,6 +22,7 @@ import re
 import sys
 from pathlib import Path
 
+import numpy as np
 import torch
 from PIL import Image
 
@@ -139,16 +140,17 @@ def resolve_image_path(
 
 
 def load_display_chw(path: Path) -> torch.Tensor:
+    """512×512 display tensor; never materialize full wide review PNGs in memory."""
     img = Image.open(path).convert("RGB")
-    arr = __import__("numpy").array(img, dtype="float32")
-    if arr.shape[0] > RES + 20:
-        arr = arr[BANNER_H : BANNER_H + RES, :, :]
-    elif arr.shape[0] != RES or arr.shape[1] != RES:
+    w, h = img.size
+    if h > RES + 20:
+        img = img.crop((0, BANNER_H, w, min(BANNER_H + RES, h)))
+    if img.size != (RES, RES):
         img = img.resize((RES, RES), Image.BILINEAR)
-        arr = __import__("numpy").array(img, dtype="float32")
+    arr = np.asarray(img, dtype=np.float32)
     if arr.max() > 1.5:
-        arr = arr / 255.0
-    return torch.tensor(arr.transpose(2, 0, 1))
+        arr *= 1.0 / 255.0
+    return torch.from_numpy(arr.transpose(2, 0, 1).copy())
 
 
 def regen_one(pair_dir: Path, *, pack_root: Path | None, reviews_root: Path | None) -> bool:

@@ -41,6 +41,7 @@ from interactive_correspondence import (  # noqa: E402
     format_center_error_line,
     format_iou_line,
 )
+from regenerate_pair_figures import _infer_trg_gt  # noqa: E402
 
 RES = 512
 BANNER_H = 80
@@ -49,15 +50,15 @@ EXP_DIR = "exp3_cross_patient"
 
 def load_display_chw(path: Path) -> torch.Tensor:
     img = Image.open(path).convert("RGB")
-    arr = np.array(img, dtype="float32")
-    if arr.shape[0] > RES + 20:
-        arr = arr[BANNER_H : BANNER_H + RES, :, :]
-    elif arr.shape[0] != RES or arr.shape[1] != RES:
+    w, h = img.size
+    if h > RES + 20:
+        img = img.crop((0, BANNER_H, w, min(BANNER_H + RES, h)))
+    if img.size != (RES, RES):
         img = img.resize((RES, RES), Image.BILINEAR)
-        arr = np.array(img, dtype="float32")
+    arr = np.asarray(img, dtype=np.float32)
     if arr.max() > 1.5:
-        arr = arr / 255.0
-    return torch.tensor(arr.transpose(2, 0, 1))
+        arr *= 1.0 / 255.0
+    return torch.from_numpy(arr.transpose(2, 0, 1).copy())
 
 
 def _load_pt(path: Path) -> dict | None:
@@ -97,8 +98,23 @@ def pair_lookup_key(pair: dict) -> tuple:
     )
 
 
-def index_pair_dirs(run_root: Path) -> dict[tuple, Path]:
-    out: dict[tuple, Path] = {}
+def pair_job_stem(pair: dict) -> str:
+    """Same slug as batch_mammo_correspondence.build_exp3_from_set (max 60 chars)."""
+    sl = str(pair["source_laterality"]).upper()[:1]
+    sv = str(pair["source_view"]).upper()
+    tl = str(pair["target_laterality"]).upper()[:1]
+    tv = str(pair["target_view"]).upper()
+    spec = f"{sl}_{sv}_to_{tl}_{tv}"
+    raw = (
+        f"src_p{pair['source_id']}_{pair['source_date']}_"
+        f"trg_p{pair['target_id']}_{pair['target_date']}_{spec}"
+    )
+    return batch.slugify(raw)
+
+
+def index_pair_dirs(run_root: Path) -> dict[str, Path]:
+    """Map batch job stem (folder name) → pair output directory."""
+    out: dict[str, Path] = {}
     exp_root = run_root / EXP_DIR
     if not exp_root.is_dir():
         exp_root = run_root
@@ -109,34 +125,22 @@ def index_pair_dirs(run_root: Path) -> dict[tuple, Path]:
         ):
             if "trg_p" not in meta.get("stem", "") and "src_p" not in meta.get("stem", ""):
                 continue
-        sp = meta.get("src_path") or ""
-        tp = meta.get("trg_path") or ""
-        spid, sdate, slat, sview = _path_ids(sp)
-        tpid, tdate, tlat, tview = _path_ids(tp)
-        sk = (spid, sdate, slat, sview, tpid, tdate, tlat, tview)
-        if len(sk) == 8 and sk[0] and sk[4]:
-            out[sk] = pj.parent
-            continue
-        stem = meta.get("stem", "")
-        ms = re.search(
-            r"src_p(\d+)_([\d-]+)_trg_p(\d+)_([\d-]+)_([LR])_([A-Z]+)_to_([LR])_([A-Z]+)",
-            stem,
-            re.I,
-        )
-        if ms:
-            out[
-                (
-                    ms.group(1),
-                    ms.group(2),
-                    ms.group(5).upper(),
-                    ms.group(6).upper(),
-                    ms.group(3),
-                    ms.group(4),
-                    ms.group(7).upper(),
-                    ms.group(8).upper(),
-                )
-            ] = pj.parent
+        parent = pj.parent
+        stem = str(meta.get("stem") or parent.name)
+        out[stem] = parent
+        out[parent.name] = parent
     return out
+
+
+def resolve_pair_dir(pair: dict, index: dict[str, Path]) -> Path | None:
+    stem = pair_job_stem(pair)
+    if stem in index:
+        return index[stem]
+    # tolerate manual folder names
+    for k, d in index.items():
+        if k == stem or (len(stem) >= 48 and k.startswith(stem[:48])):
+            return d
+    return None
 
 
 def resolve_image(path_str: str, pack_root: Path | None) -> Path:
@@ -248,16 +252,16 @@ def render_group_view(
     fig_h = 6.2 + 0.15 * n
     fig_w = max(8, 3.4 * n)
     fig, axes = plt.subplots(2, n, figsize=(fig_w, fig_h), squeeze=False)
-    fig.subplots_adjust(top=0.88, bottom=0.14, hspace=0.08, wspace=0.06)
+    fig.subplots_adjust(top=0.78, bottom=0.16, left=0.06, hspace=0.35, wspace=0.08)
 
     ious: list[float] = []
     scales: list[float] = []
     raws: list[float] = []
 
     for j, pair in enumerate(cols):
-        key = pair_lookup_key(pair)
-        pair_dir = pair_index.get(key)
+        pair_dir = resolve_pair_dir(pair, pair_index)
         if pair_dir is None:
+            print(f"  missing run for stem {pair_job_stem(pair)!r}", flush=True)
             axes[0, j].text(0.5, 0.5, "missing run", ha="center", va="center")
             axes[1, j].set_axis_off()
             axes[0, j].set_title(source_column_title(pair), fontsize=9, linespacing=1.25)
@@ -284,8 +288,15 @@ def render_group_view(
         src_xy = (float(sx), float(sy))
         est = _est_xy(pt)
         src_gt = tuple(meta["src_gt_box_512"]) if meta.get("src_gt_box_512") else None
-        trg_gt = tuple(meta["trg_gt_box_512"]) if meta.get("trg_gt_box_512") else None
         pred = _box_from_pt(pt, "trg_pred_roi_xyxy") or _box_from_pt(pt, "trg_pred_white_roi_xyxy")
+        trg_white = _box_from_pt(pt, "trg_pred_white_roi_xyxy")
+        trg_gt = _infer_trg_gt(
+            meta,
+            center_err=ce,
+            src_gt=src_gt,
+            trg_pred=pred,
+            trg_white=trg_white,
+        )
 
         draw_cell(
             axes[0, j],
@@ -317,13 +328,13 @@ def render_group_view(
         )
 
     fig.suptitle(
-        f"Experiment 3 — bucket «{bucket}»  |  {target_line}",
-        fontsize=12,
+        f"Experiment 3 — bucket «{bucket}»\n{target_line}",
+        fontsize=11,
         fontweight="bold",
-        y=0.96,
+        y=0.98,
     )
-    axes[0, 0].set_ylabel("SOURCE", fontsize=11, fontweight="bold")
-    axes[1, 0].set_ylabel("TARGET\n(same patient)", fontsize=11, fontweight="bold")
+    fig.text(0.02, 0.72, "SOURCE", fontsize=11, fontweight="bold", rotation=90, va="center")
+    fig.text(0.02, 0.38, "TARGET", fontsize=11, fontweight="bold", rotation=90, va="center")
 
     avg_parts = []
     if ious:
@@ -380,10 +391,11 @@ def main() -> None:
     data = json.loads(set_json.read_text(encoding="utf-8"))
     groups = data.get("groups") or []
     pair_index = index_pair_dirs(run_root)
-    if not pair_index:
+    n_dirs = len(set(pair_index.values()))
+    if n_dirs == 0:
         print(f"No exp3 pair folders under {run_root}", flush=True)
         sys.exit(1)
-    print(f"Indexed {len(pair_index)} exp3 pair folders")
+    print(f"Indexed {n_dirs} exp3 pair folder(s)")
 
     for group in groups:
         bucket = str(group.get("bucket") or "")
