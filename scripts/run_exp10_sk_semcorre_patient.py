@@ -36,7 +36,10 @@ if str(REPO) not in sys.path:
 
 from datasets.embed_image import MODEL_LETTERBOX_SIZE  # noqa: E402
 from run_embed_patient_model import read_token  # noqa: E402
-from run_graphmatch_patient_smoke import collect_patient_model  # noqa: E402
+from run_graphmatch_patient_smoke import (  # noqa: E402
+    collect_patient_model,
+    resolve_patient_model_arm_dirs,
+)
 
 
 def _resolve_exp5_set_path(set_json: Path) -> Path:
@@ -163,8 +166,7 @@ def _export_arm_json(
     top_k: int,
     buckets: list[str],
 ) -> dict:
-    kpt_root = arm_dir / "results" / f"patient_{patient_id}"
-    png_root = arm_dir / f"patient_{patient_id}"
+    kpt_root, png_root = resolve_patient_model_arm_dirs(arm_dir, patient_id, dataset_loc)
     chain_direction = "forward" if exam_order == "first" else "backward"
     train_exam_date = None
     views_out: dict[str, list] = {}
@@ -219,18 +221,17 @@ def process_one_patient(
         ("train_first", "first", patient_out / "sk_train_first"),
         ("train_last", "last", patient_out / "sk_train_last"),
     )
+
+    patient_export: dict = {"patient_id": pid, "exp5_buckets": buckets, "arms": {}}
     if not args.skip_sk_train:
         for _name, order, arm_dir in arms:
             _run_sk_arm(pid, order, args, arm_dir, token)
-
-    patient_export: dict = {"patient_id": pid, "exp5_buckets": buckets, "arms": {}}
     fig_dir = patient_out / "figures" / "temporal_kpts_no_triangles"
     for arm_name, order, arm_dir in arms:
         patient_export["arms"][arm_name] = _export_arm_json(
             pid, arm_name, order, arm_dir, args.dataset_loc, args.top_k, buckets
         )
-        kpt_root = arm_dir / "results" / f"patient_{pid}"
-        png_root = arm_dir / f"patient_{pid}"
+        kpt_root, png_root = resolve_patient_model_arm_dirs(arm_dir, pid, args.dataset_loc)
         for bucket in buckets:
             items = collect_patient_model(
                 kpt_root,
@@ -251,6 +252,20 @@ def process_one_patient(
                 title=f"Exp10 {pid} {arm_name} {bucket} (K={args.top_k}, no triangles)",
             )
     return patient_export
+
+
+def _ensure_gpu_for_sk_train() -> None:
+    if os.environ.get("SLURM_JOB_ID") or os.environ.get("CUDA_VISIBLE_DEVICES"):
+        return
+    if str(os.environ.get("ALLOW_EXP10_ON_LOGIN", "")).lower() in ("1", "true", "yes"):
+        return
+    host = os.environ.get("HOSTNAME", "")
+    if host.startswith("login"):
+        raise SystemExit(
+            "StableKeypoints training needs a GPU compute node (mmap/OOM on login). "
+            "Use: sbatch scripts/run_vista_exp10_temporal.slurm "
+            "or set ALLOW_EXP10_ON_LOGIN=1 only for debugging."
+        )
 
 
 def main() -> None:
@@ -290,6 +305,8 @@ def main() -> None:
     if not cohort:
         raise SystemExit("No patients to run")
 
+    if not args.skip_sk_train:
+        _ensure_gpu_for_sk_train()
     if not args.token_file.is_file() and not args.skip_sk_train:
         raise SystemExit(f"Missing HF token: {args.token_file}")
     token = read_token(args.token_file) if args.token_file.is_file() else ""
