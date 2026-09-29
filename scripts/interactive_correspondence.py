@@ -562,7 +562,7 @@ def save_correspondence_figure(
         trg_header_box = trg_gt_box or (trg_all_gt_boxes[0] if trg_all_gt_boxes else None)
     else:
         trg_header_box = pred_draw
-    trg_center_err = center_error
+    trg_center_err = center_error if show_trg_gt else None
     src_header = format_panel_header(
         role="SOURCE",
         path=source_name,
@@ -645,7 +645,7 @@ def save_correspondence_figure(
         )
     if pred_draw is not None:
         _draw_roi_rect(ax, pred_draw, x_off, edgecolor=COLOR_PRED, linestyle="-", label="Pred ROI")
-    if trg_gt_box is not None and center_error:
+    if show_trg_gt and trg_gt_box is not None and center_error:
         gx, gy = box_center_xyxy(trg_gt_box)
         ax.plot(
             [gx + x_off, tx + x_off],
@@ -660,6 +660,12 @@ def save_correspondence_figure(
             ax,
             x_off,
             format_panel_metrics(iou=roi_iou_pred, center_err=center_error),
+        )
+    elif not show_trg_gt and roi_iou_pred is not None:
+        _draw_metric_banner(
+            ax,
+            x_off,
+            format_panel_metrics(iou=roi_iou_pred, center_err=None),
         )
 
     ax.set_axis_off()
@@ -787,7 +793,10 @@ def save_bidirectional_pair_figure(
             path=target_name,
             box=trg_header_box,
             kp=forward_trg_kp,
-            extra=format_panel_metrics(iou=forward_roi_iou, center_err=forward_center_error),
+            extra=format_panel_metrics(
+                iou=forward_roi_iou,
+                center_err=forward_center_error if show_trg_gt else None,
+            ),
         ),
         ha="center",
         va="top",
@@ -840,7 +849,7 @@ def save_bidirectional_pair_figure(
     if src_gt_box is not None and back_center_error:
         gx, gy = box_center_xyxy(src_gt_box)
         ax.plot([gx, bx], [gy, by], color="cyan", linewidth=1.6, linestyle=":", zorder=8)
-    if trg_primary_gt is not None and forward_center_error:
+    if show_trg_gt and trg_primary_gt is not None and forward_center_error:
         gx, gy = box_center_xyxy(trg_primary_gt)
         ax.plot([gx + x_off, tx + x_off], [gy, ty], color="cyan", linewidth=1.6, linestyle=":", zorder=8)
 
