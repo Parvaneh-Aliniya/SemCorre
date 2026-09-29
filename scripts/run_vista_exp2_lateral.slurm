@@ -52,7 +52,9 @@ else
   exit 1
 fi
 
-PACK="${PACK:-$SCRATCH/sk_review/roi_overlays_exp2_lateral}"
+unset PACK 2>/dev/null || true
+PACK="$SCRATCH/sk_review/roi_overlays_exp2_lateral"
+export PACK
 RUN_TAG="${RUN_TAG:-vista_exp2_lateral}"
 SET_JSON="${SET_JSON:-$PROJECT/data/exp_sets/exp2_lateral.json}"
 test -f "$SET_JSON" || { echo "ERROR: missing $SET_JSON"; exit 1; }

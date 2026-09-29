@@ -1723,7 +1723,8 @@ def run_roundtrip_back_to_source(
     forward_roi_iou = None
     fwd_ce_path = save_folder / f"{file_stem}_center_error.json"
     if fwd_ce_path.is_file():
-        forward_center_error = json.loads(fwd_ce_path.read_text(encoding="utf-8")).get("vs_primary_gt")
+        _fwd_ce = json.loads(fwd_ce_path.read_text(encoding="utf-8"))
+        forward_center_error = (_fwd_ce or {}).get("vs_primary_gt")
     fwd_pt_path = save_folder / f"{file_stem}_correspondence_data.pt"
     if fwd_pt_path.is_file():
         _fwd = torch.load(fwd_pt_path, map_location="cpu", weights_only=False)
@@ -1778,7 +1779,8 @@ def run_roundtrip_back_to_source(
     back_center_error = None
     rt_ce_path = save_folder / f"{rt_stem}_center_error.json"
     if rt_ce_path.is_file():
-        back_center_error = json.loads(rt_ce_path.read_text(encoding="utf-8")).get("vs_primary_gt")
+        _rt_ce = json.loads(rt_ce_path.read_text(encoding="utf-8"))
+        back_center_error = (_rt_ce or {}).get("vs_primary_gt")
     trg_gt_for_bidir = trg_all_gt_boxes[0] if trg_all_gt_boxes else None
     overlay_path = save_folder / f"{rt_stem}_source_roundtrip_overlay.png"
     save_roundtrip_source_overlay_figure(
