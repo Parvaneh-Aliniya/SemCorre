@@ -44,8 +44,8 @@ RES = 512
 BANNER_H = 80
 EXP_DIR = "exp3_cross_patient"
 EXP3_ROI_LW = 1.6
-EXP3_POINT_S = 16
-EXP3_GT_X_S = 12
+EXP3_POINT_S = 7
+EXP3_GT_X_S = 10
 EXP3_COL_W_IN = 2.05
 EXP3_ROW_H_IN = 2.15
 
@@ -214,6 +214,26 @@ def _est_xy(pt: dict | None) -> tuple[float, float] | None:
     return None
 
 
+def _blank_cell(ax, message: str) -> None:
+    """Placeholder when this source→target pair was not in the Exp3 batch."""
+    ax.set_facecolor("black")
+    ax.set_xlim(0, RES)
+    ax.set_ylim(RES, 0)
+    ax.text(
+        0.5,
+        0.5,
+        message,
+        ha="center",
+        va="center",
+        fontsize=7,
+        color="#aaaaaa",
+        transform=ax.transAxes,
+        wrap=True,
+    )
+    ax.margins(0)
+    ax.set_axis_off()
+
+
 def draw_cell(
     ax,
     display: torch.Tensor,
@@ -241,7 +261,7 @@ def draw_cell(
             c=COLOR_FORWARD_LINE,
             s=EXP3_POINT_S,
             zorder=8,
-            linewidths=0.6,
+            linewidths=0.4,
             edgecolors="white",
         )
     if est_xy is not None:
@@ -251,7 +271,7 @@ def draw_cell(
             c=COLOR_FORWARD_LINE,
             s=EXP3_POINT_S,
             zorder=8,
-            linewidths=0.6,
+            linewidths=0.4,
             edgecolors="white",
         )
     if show_line and gt_box is not None and est_xy is not None:
@@ -307,14 +327,14 @@ def _render_one_column(
 ) -> None:
     ax_src.set_title(source_column_title(src_tpl), fontsize=7, linespacing=1.2, pad=3)
     if pair is None:
-        ax_src.text(0.5, 0.5, "no pair", ha="center", va="center", fontsize=8, transform=ax_src.transAxes)
-        ax_trg.set_axis_off()
+        _blank_cell(ax_src, "not in batch\n(other target only)")
+        _blank_cell(ax_trg, "")
         return
     pair_dir = resolve_pair_dir(pair, pair_index)
     if pair_dir is None:
         print(f"  missing run for stem {pair_job_stem(pair)!r}", flush=True)
-        ax_src.text(0.5, 0.5, "missing run", ha="center", va="center", fontsize=8, transform=ax_src.transAxes)
-        ax_trg.set_axis_off()
+        _blank_cell(ax_src, "missing run")
+        _blank_cell(ax_trg, "")
         return
 
     meta = json.loads((pair_dir / f"{meta_stem(pair_dir)}_pair.json").read_text(encoding="utf-8"))
