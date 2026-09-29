@@ -13,9 +13,15 @@
 
 set -euo pipefail
 
+# Must run via sbatch on gh (GPU). Running with bash on login1 loads SD on CPU and OOMs.
+case "$(hostname -s)" in
+  login*) echo "ERROR: use sbatch, not bash on $(hostname). Example: sbatch $0"; exit 1 ;;
+esac
+
 PROJECT=/home1/11364/paliniya/projects/semcorre
 cd "$PROJECT"
 mkdir -p logs
+echo "=== compute node $(hostname -s) $(date -u) ==="
 
 SK_ENV_DEFAULT="${SK_ENV:-/scratch/11364/paliniya/stablekeypoints/sk_env}"
 if [[ -z "${SEMCRE_VENV:-}" && -f "$PROJECT/.semcorre_venv_path" ]]; then
@@ -83,7 +89,8 @@ run_layers() {
     --layers "$@"
 }
 
-nvidia-smi -L || { echo "ERROR: no GPU"; exit 1; }
+nvidia-smi -L || { echo "ERROR: no GPU on this node — sbatch -p gh"; exit 1; }
+python -c "import torch; ok=torch.cuda.is_available(); print('torch', torch.__version__, 'cuda_available', ok); assert ok, 'PyTorch cannot see CUDA (module load gcc cuda?)'"
 echo "PACK=$PACK  SET_JSON=$SET_JSON"
 
 run_layers vista_review_3pairs_layers_2_6 2 3 4 5 6

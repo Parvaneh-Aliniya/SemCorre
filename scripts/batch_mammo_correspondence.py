@@ -2592,8 +2592,15 @@ def main():
         encoding="utf-8",
     )
 
-    device = args.device if torch.cuda.is_available() else "cpu"
-    print(f"Loading Stable Diffusion on {device}...")
+    want_cuda = str(args.device).startswith("cuda")
+    if want_cuda and not torch.cuda.is_available():
+        raise SystemExit(
+            "ERROR: --device cuda requested but torch.cuda.is_available() is False. "
+            "Do not run on a login node; submit with sbatch -p gh. "
+            "On the compute node: module load gcc cuda && python -c \"import torch; print(torch.cuda.is_available())\"."
+        )
+    device = args.device if want_cuda else "cpu"
+    print(f"Loading Stable Diffusion on {device}...", flush=True)
     ldm = load_ldm(device, args.model_type)
 
     hyper = dict(
