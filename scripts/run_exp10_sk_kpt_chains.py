@@ -150,6 +150,20 @@ def _dist(a: tuple[float, float], b: tuple[float, float]) -> float:
     return math.hypot(a[0] - b[0], a[1] - b[1])
 
 
+def _bucket_anchor_date(exams: list[dict], arm: dict) -> str | None:
+    for e in exams:
+        if e.get("is_train_source"):
+            return str(e["exam_date"])[:10]
+    td = arm.get("train_exam_date")
+    if td and any(str(e.get("exam_date", ""))[:10] == str(td)[:10] for e in exams):
+        return str(td)[:10]
+    if not exams:
+        return None
+    dates = sorted(str(e["exam_date"])[:10] for e in exams)
+    direction = arm.get("chain_direction", "backward")
+    return dates[0] if direction == "forward" else dates[-1]
+
+
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--export-json", type=Path, required=True)
@@ -206,9 +220,14 @@ def main() -> None:
             n_k = top_k if args.limit_kpts <= 0 else min(top_k, args.limit_kpts)
             for bucket, exams in arm.get("buckets", {}).items():
                 lat, view = bucket.split("_", 1)
-                by_date = {e["exam_date"]: e for e in exams}
-                train_date = arm.get("train_exam_date")
+                by_date = {str(e["exam_date"])[:10]: e for e in exams}
+                train_date = _bucket_anchor_date(exams, arm)
                 if not train_date or train_date not in by_date:
+                    print(
+                        f"  skip {pid} {arm_name} {bucket}: no anchor in export "
+                        f"(want train source; run backfill_embed_train_keypoints.py)",
+                        flush=True,
+                    )
                     continue
                 train_xy_list = by_date[train_date]["xy_512"]
                 arm_bucket_dir = out_root / f"patient_{pid}" / arm_name / bucket

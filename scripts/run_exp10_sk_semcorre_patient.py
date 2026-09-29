@@ -39,6 +39,7 @@ from run_embed_patient_model import read_token  # noqa: E402
 from run_graphmatch_patient_smoke import (  # noqa: E402
     collect_patient_model,
     resolve_patient_model_arm_dirs,
+    train_source_exam_date,
 )
 
 
@@ -171,6 +172,7 @@ def _export_arm_json(
     train_exam_date = None
     views_out: dict[str, list] = {}
     for bucket in buckets:
+        side, view = bucket.split("_", 1)
         items = collect_patient_model(
             kpt_root,
             png_root,
@@ -197,7 +199,14 @@ def _export_arm_json(
                 }
             )
         rows.sort(key=lambda r: r["exam_date"])
-        train_exam_date = rows[0]["exam_date"] if exam_order == "first" else rows[-1]["exam_date"]
+        anchor = train_source_exam_date(png_root, view, side, exam_order)
+        train_rows = [r for r in rows if r.get("is_train_source")]
+        if train_rows:
+            train_exam_date = train_rows[0]["exam_date"]
+        elif anchor:
+            train_exam_date = anchor
+        else:
+            train_exam_date = rows[0]["exam_date"] if exam_order == "first" else rows[-1]["exam_date"]
         views_out[bucket] = rows
     return {
         "arm": arm_name,
