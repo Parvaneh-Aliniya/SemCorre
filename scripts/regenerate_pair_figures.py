@@ -478,8 +478,10 @@ def main() -> None:
     for pair_dir in sorted(run_root.rglob("*")):
         if not pair_dir.is_dir():
             continue
-        if args.patient and args.patient not in pair_dir.name:
-            continue
+        if args.patient:
+            rel = str(pair_dir.relative_to(run_root)).replace("\\", "/")
+            if args.patient not in rel and args.patient not in pair_dir.name:
+                continue
         if not list(pair_dir.glob("*_pair.json")):
             continue
         try:
