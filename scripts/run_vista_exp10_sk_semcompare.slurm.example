@@ -35,8 +35,9 @@ if [[ ! -f "$PACK/roi_coords.csv" ]]; then
     --dataset-loc "$DATASET" --out "$PACK" --keep-all-rois "${args[@]}"
 fi
 
-cd "$SKP"
-python -u run_exp10_sk_semcorre_patient.py \
+export SKP="$SKP"
+cd "$SEMCRE"
+python -u scripts/run_exp10_sk_semcorre_patient.py \
   --set-json "$SET_JSON" \
   --dataset-loc "$DATASET" \
   --pack-dir "$PACK" \
