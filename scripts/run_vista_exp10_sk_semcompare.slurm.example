@@ -1,0 +1,40 @@
+#!/bin/bash
+# Exp10: one-patient SK (first vs last train, K=7) + SemCorre kpt chains + distance CSV.
+#SBATCH -J semcorre_e10
+#SBATCH -N 1
+#SBATCH -n 1
+#SBATCH -t 08:00:00
+#SBATCH -o logs/semcorre_e10_%j.out
+#SBATCH -e logs/semcorre_e10_%j.err
+#SBATCH -A ASC26012
+#SBATCH -p gh
+
+set -euo pipefail
+case "$(hostname -s)" in login*) echo "use sbatch"; exit 1 ;; esac
+
+SKP=/home1/11364/paliniya/projects/StableKeypointsPlus
+SEMCRE=/home1/11364/paliniya/projects/semcorre
+export SCRATCH=/scratch/11364/paliniya
+export EMBED_DATA_DIR="${EMBED_DATA_DIR:-$SCRATCH/embed_dataset/tables}"
+
+PATIENT_ID="${PATIENT_ID:-62877247}"
+PACK="${PACK:-$SCRATCH/sk_review/roi_overlays_exp5_temporal}"
+OUT="$SCRATCH/sk_runs_v2/exp10_p${PATIENT_ID}"
+DATASET="$SCRATCH/sk_png_dataset_full"
+
+source "${SK_ENV:-$SCRATCH/stablekeypoints/sk_env}/bin/activate"
+module load gcc cuda 2>/dev/null || true
+
+cd "$SKP"
+python -u run_exp10_sk_semcorre_patient.py \
+  --patient-id "$PATIENT_ID" \
+  --dataset-loc "$DATASET" \
+  --pack-dir "$PACK" \
+  --out-root "$OUT" \
+  --top-k 7 \
+  --token-file "$SKP/token.txt" \
+  --semcorre-repo "$SEMCRE"
+
+echo "Results: $OUT"
+echo "  figures: $OUT/figures/temporal_kpts_no_triangles/"
+echo "  compare: $OUT/semcorre_chains/exp10_sk_vs_semcorre_distances.csv"
