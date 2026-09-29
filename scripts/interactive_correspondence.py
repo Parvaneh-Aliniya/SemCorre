@@ -748,6 +748,7 @@ def save_bidirectional_pair_figure(
     roi_iou_peak_sum: Optional[float] = None,
     experiment_type: str = "",
     experiment_detail: str = "",
+    show_trg_gt: bool = True,
 ) -> None:
     """One row: source | target — forward (orange) + back (hot pink) with GT/pred ROIs."""
     if back_roi_iou is None:
@@ -759,6 +760,8 @@ def save_bidirectional_pair_figure(
     bx, by = back_src_kp
     x_off = 512.0
     trg_primary_gt = trg_gt_box or (trg_all_gt_boxes[0] if trg_all_gt_boxes else None)
+    trg_pred_draw = forward_trg_pred_box if forward_trg_pred_box is not None else trg_pred_white_box
+    trg_header_box = trg_primary_gt if show_trg_gt else trg_pred_draw
 
     fig = plt.figure(figsize=(20, 13))
     fig.text(
@@ -782,7 +785,7 @@ def save_bidirectional_pair_figure(
         format_panel_header(
             role="TARGET",
             path=target_name,
-            box=trg_primary_gt or trg_pred_white_box,
+            box=trg_header_box,
             kp=forward_trg_kp,
             extra=format_panel_metrics(iou=forward_roi_iou, center_err=forward_center_error),
         ),
@@ -811,24 +814,26 @@ def save_bidirectional_pair_figure(
     src_boxes = list(src_all_gt_boxes or [])
     if src_gt_box is not None and not any(_boxes_close(src_gt_box, b) for b in src_boxes):
         src_boxes.insert(0, src_gt_box)
+    if src_gt_box is not None:
+        _draw_roi_rect(ax, src_gt_box, 0.0, edgecolor=COLOR_GT, linestyle="-", label="GT ROI")
     if src_boxes:
-        _draw_gt_roi_list(ax, src_boxes, 0.0)
+        _draw_gt_roi_list(ax, src_boxes, 0.0, primary=src_gt_box)
     if src_gt_box is not None:
         gx, gy = box_center_xyxy(src_gt_box)
         ax.scatter([gx], [gy], c=COLOR_GT, s=28, marker="x", zorder=7)
-    trg_boxes = list(trg_all_gt_boxes or [])
-    if trg_primary_gt is not None and not any(_boxes_close(trg_primary_gt, b) for b in trg_boxes):
-        trg_boxes.insert(0, trg_primary_gt)
-    if trg_boxes:
-        _draw_gt_roi_list(ax, trg_boxes, x_off)
-    if trg_primary_gt is not None:
-        gx, gy = box_center_xyxy(trg_primary_gt)
-        ax.scatter([gx + x_off], [gy], c=COLOR_GT, s=28, marker="x", zorder=7)
+    if show_trg_gt:
+        trg_boxes = list(trg_all_gt_boxes or [])
+        if trg_primary_gt is not None and not any(_boxes_close(trg_primary_gt, b) for b in trg_boxes):
+            trg_boxes.insert(0, trg_primary_gt)
+        if trg_boxes:
+            _draw_gt_roi_list(ax, trg_boxes, x_off)
+        if trg_primary_gt is not None:
+            gx, gy = box_center_xyxy(trg_primary_gt)
+            ax.scatter([gx + x_off], [gy], c=COLOR_GT, s=28, marker="x", zorder=7)
     if back_pred_box is not None:
         _draw_roi_rect(
             ax, back_pred_box, 0.0, edgecolor=COLOR_PRED, linestyle="-", label="Back pred ROI"
         )
-    trg_pred_draw = forward_trg_pred_box if forward_trg_pred_box is not None else trg_pred_white_box
     if trg_pred_draw is not None:
         _draw_roi_rect(ax, trg_pred_draw, x_off, edgecolor=COLOR_PRED, linestyle="-", label="Pred ROI")
 

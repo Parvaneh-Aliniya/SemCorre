@@ -13,12 +13,9 @@ Vista (pack on scratch):
     --run-root $SCRATCH/semcorre_batch_outputs/batch_experiments/vista_exp1_views \\
     --pack-dir $SCRATCH/sk_review/roi_overlays_exp1_views
 
-Exp2 — target panel without GT overlays (keeps source GT + pred point/ROI):
-  python scripts/regenerate_pair_figures.py \\
-    --run-root path/to/vista_exp2_lateral \\
-    --pack-dir path/to/roi_overlays_exp2_lateral \\
-    --no-trg-gt
-  # writes *_correspondences_estimated_no_trg_gt.png (use --in-place to overwrite)
+Exp2 review (--no-trg-gt): bidirectional figure in *_correspondences_estimated_no_trg_gt.png
+  (source: green GT + blue back-pred ROI + back IoU/dist; orange forward + pink back arrows;
+   target: blue forward-pred ROI + forward IoU/dist; no green target GT).
 """
 
 from __future__ import annotations
@@ -258,7 +255,6 @@ def regen_one(
     show_trg_gt: bool = True,
     fig_suffix: str = "",
     overlay_display: bool = False,
-    include_roundtrip_arrow: bool = False,
 ) -> bool:
     pair_jsons = list(pair_dir.glob("*_pair.json"))
     if not pair_jsons:
@@ -329,14 +325,68 @@ def regen_one(
     m_ex = re.search(r"_ex(\d+)", stem)
     exam_id = m_ex.group(1) if m_ex else ""
 
-    roundtrip_src_kp = None
-    if include_roundtrip_arrow:
-        rt = meta.get("roundtrip_back") or {}
-        bk = rt.get("back_source_kp_512") or {}
-        if "x" in bk and "y" in bk:
-            roundtrip_src_kp = (float(bk["x"]), float(bk["y"]))
-
     corr_name = f"{stem}_correspondences_estimated{fig_suffix}.png"
+    corr_path = pair_dir / corr_name
+    rt = meta.get("roundtrip_back")
+
+    def _roundtrip_draw_kwargs() -> dict | None:
+        if not rt:
+            return None
+        rt_pt = _load_pt(pair_dir / f"{stem}_roundtrip_back_correspondence_data.pt")
+        back_pred = tuple(rt["back_pred_roi_xyxy"]) if rt.get("back_pred_roi_xyxy") else None
+        if back_pred is None and rt_pt:
+            back_pred = _box_from_pt(rt_pt, "trg_pred_roi_xyxy")
+        fk = rt.get("forward_target_kp_512") or {}
+        bk = rt.get("back_source_kp_512") or {}
+        if back_pred is None and "x" in bk and "y" in bk and src_gt is not None:
+            w = max(8.0, src_gt[2] - src_gt[0])
+            h = max(8.0, src_gt[3] - src_gt[1])
+            back_pred = box_from_center_size(float(bk["x"]), float(bk["y"]), w, h)
+        back_iou = rt.get("roi_iou_pred_point")
+        back_ce = (rt.get("center_error") or {}).get("vs_primary_gt")
+        rt_ce_path = pair_dir / f"{stem}_roundtrip_back_center_error.json"
+        if rt_ce_path.is_file() and back_ce is None:
+            back_ce = json.loads(rt_ce_path.read_text(encoding="utf-8")).get("vs_primary_gt")
+        return dict(
+            rt_pt=rt_pt,
+            back_pred=back_pred,
+            fk=fk,
+            bk=bk,
+            back_iou=back_iou,
+            back_ce=back_ce,
+        )
+
+    rt_kw = _roundtrip_draw_kwargs()
+
+    # Review mode: one figure = bidirectional (orange forward + pink back, source GT + blue back pred).
+    if not show_trg_gt and rt_kw is not None:
+        fk, bk = rt_kw["fk"], rt_kw["bk"]
+        save_bidirectional_pair_figure(
+            src_t,
+            trg_t,
+            forward_src_kp=(float(sx), float(sy)),
+            forward_trg_kp=(float(fk.get("x", est[0])), float(fk.get("y", est[1]))),
+            back_src_kp=(float(bk.get("x", sx)), float(bk.get("y", sy))),
+            source_name=str(src_path),
+            target_name=str(trg_path),
+            save_path=corr_path,
+            src_gt_box=src_gt,
+            src_all_gt_boxes=src_all,
+            trg_all_gt_boxes=trg_all,
+            trg_gt_box=trg_gt,
+            back_pred_box=rt_kw["back_pred"],
+            forward_trg_pred_box=trg_pred,
+            trg_pred_white_box=trg_white,
+            forward_roi_iou=forward_iou,
+            back_roi_iou=rt_kw["back_iou"],
+            forward_center_error=center_err,
+            back_center_error=rt_kw["back_ce"],
+            experiment_type=meta.get("experiment_label", ""),
+            experiment_detail=meta.get("experiment_detail", ""),
+            show_trg_gt=False,
+        )
+        return True
+
     save_correspondence_figure(
         src_t,
         trg_t,
@@ -344,7 +394,7 @@ def regen_one(
         torch.tensor([est[0], est[1]]),
         source_name=str(src_path),
         target_name=str(trg_path),
-        save_path=pair_dir / corr_name,
+        save_path=corr_path,
         src_gt_box=src_gt,
         trg_gt_box=trg_gt,
         src_all_gt_boxes=src_all,
@@ -361,25 +411,12 @@ def regen_one(
         center_error=center_err,
         show_trg_gt=show_trg_gt,
         show_src_gt=True,
-        roundtrip_src_kp=roundtrip_src_kp,
     )
 
-    rt = meta.get("roundtrip_back")
-    if not rt:
+    if rt_kw is None:
         return True
 
-    rt_pt = _load_pt(pair_dir / f"{stem}_roundtrip_back_correspondence_data.pt")
-    back_pred = tuple(rt["back_pred_roi_xyxy"]) if rt.get("back_pred_roi_xyxy") else None
-    if back_pred is None and rt_pt:
-        back_pred = _box_from_pt(rt_pt, "trg_pred_roi_xyxy")
-
-    fk = rt.get("forward_target_kp_512") or {}
-    bk = rt.get("back_source_kp_512") or {}
-    back_iou = rt.get("roi_iou_pred_point")
-    back_ce = (rt.get("center_error") or {}).get("vs_primary_gt")
-    rt_ce_path = pair_dir / f"{stem}_roundtrip_back_center_error.json"
-    if rt_ce_path.is_file() and back_ce is None:
-        back_ce = json.loads(rt_ce_path.read_text(encoding="utf-8")).get("vs_primary_gt")
+    fk, bk = rt_kw["fk"], rt_kw["bk"]
     save_bidirectional_pair_figure(
         src_t,
         trg_t,
@@ -393,17 +430,20 @@ def regen_one(
         src_all_gt_boxes=src_all,
         trg_all_gt_boxes=trg_all,
         trg_gt_box=trg_gt,
-        back_pred_box=back_pred,
+        back_pred_box=rt_kw["back_pred"],
         forward_trg_pred_box=trg_pred,
         trg_pred_white_box=trg_white,
         forward_roi_iou=forward_iou,
-        back_roi_iou=back_iou,
+        back_roi_iou=rt_kw["back_iou"],
         forward_center_error=center_err,
-        back_center_error=back_ce,
+        back_center_error=rt_kw["back_ce"],
         experiment_type=meta.get("experiment_label", ""),
         experiment_detail=meta.get("experiment_detail", ""),
+        show_trg_gt=True,
     )
 
+    rt_pt = rt_kw["rt_pt"]
+    back_pred = rt_kw["back_pred"]
     if rt_pt is not None and back_pred is not None:
         bx, by = float(bk.get("x", sx)), float(bk.get("y", sy))
         tx, ty = float(fk.get("x", est[0])), float(fk.get("y", est[1]))
@@ -427,8 +467,8 @@ def regen_one(
             experiment_detail=(meta.get("experiment_detail", "") + " | round-trip back"),
             src_exam_id=exam_id,
             trg_exam_id=exam_id,
-            center_error=back_ce,
-            roi_iou_pred=back_iou,
+            center_error=rt_kw["back_ce"],
+            roi_iou_pred=rt_kw["back_iou"],
         )
     return True
 
@@ -465,18 +505,12 @@ def main() -> None:
         action="store_true",
         help="Use pack ROI-overlay PNGs (red ROI on mammo) for figure panels.",
     )
-    p.add_argument(
-        "--with-roundtrip-arrow",
-        action="store_true",
-        help="Add hot-pink round-trip arrow (target → source) when pair.json has roundtrip_back.",
-    )
     args = p.parse_args()
     fig_suffix = args.fig_suffix
     if args.no_trg_gt and not fig_suffix and not args.in_place:
         fig_suffix = "_no_trg_gt"
     show_trg_gt = not args.no_trg_gt
     overlay_display = args.overlay_display or args.no_trg_gt
-    include_roundtrip_arrow = args.with_roundtrip_arrow
 
     run_root = Path(args.run_root).expanduser().resolve()
     pack_root = Path(args.pack_dir).expanduser().resolve() if args.pack_dir else None
@@ -502,7 +536,6 @@ def main() -> None:
                 show_trg_gt=show_trg_gt,
                 fig_suffix=fig_suffix,
                 overlay_display=overlay_display,
-                include_roundtrip_arrow=include_roundtrip_arrow,
             ):
                 n_ok += 1
                 print("redrew", pair_dir.relative_to(run_root))
