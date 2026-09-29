@@ -35,6 +35,7 @@ if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
 from datasets.embed_image import MODEL_LETTERBOX_SIZE  # noqa: E402
+from run_embed_patient_model import read_token  # noqa: E402
 from run_graphmatch_patient_smoke import collect_patient_model  # noqa: E402
 
 
@@ -291,7 +292,7 @@ def main() -> None:
 
     if not args.token_file.is_file() and not args.skip_sk_train:
         raise SystemExit(f"Missing HF token: {args.token_file}")
-    token = args.token_file.read_text(encoding="utf-8").strip() if args.token_file.is_file() else ""
+    token = read_token(args.token_file) if args.token_file.is_file() else ""
 
     args.out_root.mkdir(parents=True, exist_ok=True)
     export = {
