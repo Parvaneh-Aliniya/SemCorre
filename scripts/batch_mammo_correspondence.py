@@ -788,6 +788,158 @@ def _exp2_cross_lateral_pair(
     )
 
 
+def build_exp2_from_set(
+    records: list[RoiRecord],
+    pack_root: Path,
+    index: list[dict],
+    review_patients: list[dict],
+) -> list[PairJob]:
+    """Exp2 from Experiments/lateral JSON: one L and one R per view (dates may differ)."""
+    jobs: list[PairJob] = []
+    seen: set[str] = set()
+    for patient in review_patients:
+        pid = str(patient.get("id") or "")
+        if not pid:
+            continue
+        by_lv: dict[tuple[str, str], dict] = {}
+        for ex in patient.get("exams") or []:
+            for im in ex.get("images") or []:
+                lat = str(im.get("laterality") or ex.get("laterality") or "")[:1].upper()
+                view = str(im.get("view") or "").upper()
+                if not lat or not view:
+                    continue
+                key = (lat, view)
+                if key not in by_lv:
+                    by_lv[key] = {
+                        "date": str(im.get("date") or ex.get("date") or ""),
+                        "laterality": lat,
+                        "view": view,
+                    }
+        views = sorted({v for _, v in by_lv.keys()})
+        for view in views:
+            l_im = by_lv.get(("L", view))
+            r_im = by_lv.get(("R", view))
+            if not l_im or not r_im:
+                continue
+            for src_lat, trg_lat in (("L", "R"), ("R", "L")):
+                src_im = l_im if src_lat == "L" else r_im
+                trg_im = r_im if trg_lat == "R" else l_im
+                src = find_roi_record(
+                    records,
+                    patient_id=pid,
+                    exam_date=src_im["date"],
+                    laterality=src_lat,
+                    view=view,
+                )
+                trg = find_roi_record(
+                    records,
+                    patient_id=pid,
+                    exam_date=trg_im["date"],
+                    laterality=trg_lat,
+                    view=view,
+                )
+                if src is None:
+                    print(
+                        f"  [exp2] skip {pid} {src_im['date']} {src_lat} {view}: no roi_coords row",
+                        flush=True,
+                    )
+                    continue
+                trg_path: Path | None = None
+                if trg is not None:
+                    trg_path = resolve_clean_path(pack_root, trg.image_path)
+                else:
+                    trg_item = next(
+                        (
+                            it
+                            for it in index
+                            if str(it.get("patient_id")) == pid
+                            and str(it.get("laterality") or "")[:1].upper() == trg_lat
+                            and str(it.get("view") or "").upper() == view
+                            and str(it.get("exam_date") or "") == trg_im["date"]
+                        ),
+                        None,
+                    )
+                    if trg_item is None:
+                        print(
+                            f"  [exp2] skip {pid} → {trg_im['date']} {trg_lat} {view}: "
+                            "no pack image",
+                            flush=True,
+                        )
+                        continue
+                    trg_path = resolve_clean_path(pack_root, trg_item["image_path"])
+                src_path = resolve_clean_path(pack_root, src.image_path)
+                src_box, src_xy, _ = roi_on_record(src_path, src, require_on_tissue=False)
+                trg_box, _, trg_ok = (None, (0.0, 0.0), False)
+                if trg is not None:
+                    trg_box, _, trg_ok = roi_on_record(trg_path, trg, require_on_tissue=True)
+                same_exam = src_im["date"] == trg_im["date"]
+                arrow = f"{src_lat} → {trg_lat}"
+                label = (
+                    f"Experiment 2: cross-lateral ({arrow}, same patient, exam, view)"
+                    if same_exam
+                    else f"Experiment 2: cross-lateral ({arrow}, same patient, view; review dates)"
+                )
+                detail = (
+                    f"patient {pid} | exam {src_im['date']} | view {view} | source {src_lat} → target {trg_lat}"
+                    if same_exam
+                    else (
+                        f"patient {pid} | view {view} | "
+                        f"source {src_lat} {src_im['date']} → target {trg_lat} {trg_im['date']}"
+                    )
+                )
+                if trg is None:
+                    detail += " | target has no roi_coords row (round-trip IoU vs source ROI)"
+                elif not trg_ok:
+                    detail += " | target GT omitted (ROI off-tissue on target PNG)"
+                stem = (
+                    slugify(f"p{pid}_ex{src.exam_id}_{view}_{src_lat}_to_{trg_lat}")
+                    if same_exam
+                    else slugify(
+                        f"p{pid}_{src_im['date']}_to_{trg_im['date']}_{view}_{src_lat}_to_{trg_lat}"
+                    )
+                )
+                job = PairJob(
+                    "exp2_cross_lateral",
+                    label,
+                    detail,
+                    src_path,
+                    trg_path,
+                    src_xy,
+                    src_box,
+                    trg_box if trg_ok else None,
+                    trg_ok,
+                    stem,
+                )
+                if job.stem in seen:
+                    continue
+                seen.add(job.stem)
+                src_recs = [
+                    r
+                    for r in records
+                    if r.patient_id == pid
+                    and r.exam_date == src_im["date"]
+                    and r.laterality.upper()[:1] == src_lat
+                    and r.view.upper() == view
+                ]
+                job.src_all_gt_512 = boxes_512_for_records(
+                    src_path, src_recs, require_on_tissue=False
+                )
+                if trg is not None:
+                    trg_recs = [
+                        r
+                        for r in records
+                        if r.patient_id == pid
+                        and r.exam_date == trg_im["date"]
+                        and r.laterality.upper()[:1] == trg_lat
+                        and r.view.upper() == view
+                    ]
+                    job.trg_all_gt_512 = boxes_512_for_records(
+                        trg_path, trg_recs, require_on_tissue=False
+                    )
+                jobs.append(job)
+    return jobs
+
+
 def build_exp2(records: list[RoiRecord], pack_root: Path, index: list[dict]) -> list[PairJob]:
     """L↔R for each laterality+view; opposite lateral PNG from pack index."""
     jobs: list[PairJob] = []
@@ -1061,6 +1213,7 @@ def load_set_json(path: str | Path) -> dict:
         "patient_ids": patients,
         "exp5_views": views,
         "exp3_groups": data.get("groups") or [],
+        "review_patients": data.get("patients") or [],
         "raw": data,
     }
 
@@ -2263,9 +2416,19 @@ def main():
         j1 = filter_pair_jobs_for_patients(j1, exp1_set) if exp1_set else j1
         jobs.extend(filter_pair_jobs_for_exams(j1, exam_specs))
     if "exp2" in want:
-        j2 = build_exp2(records, pack_root, index)
-        j2 = filter_pair_jobs_for_patients(j2, exp2_set) if exp2_set else j2
-        jobs.extend(filter_pair_jobs_for_exams(j2, exam_specs))
+        if (
+            set_info
+            and set_info["experiment"] == "exp2"
+            and set_info.get("review_patients")
+        ):
+            j2 = build_exp2_from_set(
+                records, pack_root, index, set_info["review_patients"]
+            )
+        else:
+            j2 = build_exp2(records, pack_root, index)
+            j2 = filter_pair_jobs_for_patients(j2, exp2_set) if exp2_set else j2
+            j2 = filter_pair_jobs_for_exams(j2, exam_specs)
+        jobs.extend(j2)
     prim = primary_records(records)
     if "exp3" in want:
         if set_info and set_info.get("exp3_groups"):

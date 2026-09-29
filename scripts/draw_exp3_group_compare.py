@@ -281,36 +281,53 @@ def draw_cell(
     ax.set_axis_off()
 
 
-def source_column_title(pair: dict) -> str:
-    return (
-        f"p{pair['source_id']}  {pair['source_date']}\n"
-        f"{pair['source_laterality']} {pair['source_view']}"
-    )
+def source_column_title(pair: dict, ce: dict | None = None) -> str:
+    lines = [
+        f"p{pair['source_id']}  {pair['source_date']}",
+        f"{pair['source_laterality']} {pair['source_view']}",
+    ]
+    if ce:
+        lines.append(format_center_error_line(ce))
+    return "\n".join(lines)
 
 
-def all_sources_for_view(groups: list[dict], view: str) -> list[dict]:
-    """Unique sources (union of small + large buckets) for this target view."""
+def pairs_for_group_view(group: dict, view: str) -> list[dict]:
+    """Batch pairs for one target bucket and view (no empty columns)."""
     view = view.upper()
-    by_id: dict[str, dict] = {}
-    for group in groups:
-        for p in group.get("pairs") or []:
-            if str(p["target_view"]).upper() != view:
-                continue
-            sid = str(p["source_id"])
-            if sid not in by_id:
-                by_id[sid] = p
-    return [by_id[k] for k in sorted(by_id.keys(), key=lambda x: int(x) if x.isdigit() else x)]
+    cols = [p for p in group.get("pairs") or [] if str(p["target_view"]).upper() == view]
+    cols.sort(key=lambda p: (str(p["source_id"]), str(p["source_date"])))
+    return cols
 
 
-def find_pair_in_group(group: dict, source_id: str, view: str) -> dict | None:
-    view = view.upper()
-    for p in group.get("pairs") or []:
-        if str(p["source_id"]) != str(source_id):
-            continue
-        if str(p["target_view"]).upper() != view:
-            continue
-        return p
-    return None
+def format_full_column_footer(iou: float | None, ce: dict | None) -> str:
+    lines = [format_iou_line(iou), format_center_error_line(ce)]
+    if not ce:
+        return "\n".join(lines)
+    dx, dy = ce.get("dx_512"), ce.get("dy_512")
+    if dx is not None and dy is not None:
+        lines.append(f"Δ512 ({float(dx):.1f}, {float(dy):.1f})")
+    nat = ce.get("dist_raw_px", ce.get("dist_native_px"))
+    if nat is not None:
+        s = f"native {float(nat):.1f}px"
+        pw = ce.get("dist_pct_of_native_width")
+        if pw is not None:
+            s += f" ({float(pw):.1f}% PNG W)"
+        lines.append(s)
+    pct = ce.get("dist_pct_of_width")
+    if pct is not None:
+        lines.append(f"{float(pct):.2f}% of 512 W")
+    return "\n".join(lines)
+
+
+def format_group_footer(ious: list[float], scales: list[float], raws: list[float]) -> str:
+    parts = []
+    if ious:
+        parts.append(f"mean IoU {sum(ious) / len(ious):.4f} (n={len(ious)})")
+    if scales:
+        parts.append(f"mean dist512 {sum(scales) / len(scales):.1f}px")
+    if raws:
+        parts.append(f"mean dist native {sum(raws) / len(raws):.1f}px")
+    return "  |  ".join(parts)
 
 
 def _render_one_column(
@@ -325,8 +342,8 @@ def _render_one_column(
     scales: list[float],
     raws: list[float],
 ) -> None:
-    ax_src.set_title(source_column_title(src_tpl), fontsize=7, linespacing=1.2, pad=3)
     if pair is None:
+        ax_src.set_title(source_column_title(src_tpl), fontsize=7, linespacing=1.2, pad=3)
         _blank_cell(ax_src, "not in batch\n(other target only)")
         _blank_cell(ax_trg, "")
         return
@@ -368,17 +385,18 @@ def _render_one_column(
         trg_white=trg_white,
     )
 
+    ax_src.set_title(source_column_title(src_tpl, ce), fontsize=7, linespacing=1.2, pad=3)
     draw_cell(ax_src, src_t, gt_box=src_gt, pred_box=None, src_xy=src_xy, show_line=False)
     draw_cell(ax_trg, trg_t, gt_box=trg_gt, pred_box=pred, est_xy=est, show_line=True)
-    foot = format_iou_line(iou) + "\n" + format_center_error_line(ce)
+    foot = format_full_column_footer(iou, ce)
     ax_trg.text(
         0.5,
-        -0.02,
+        -0.04,
         foot,
         transform=ax_trg.transAxes,
         ha="center",
         va="top",
-        fontsize=6.5,
+        fontsize=7,
         linespacing=1.25,
     )
 
@@ -391,19 +409,21 @@ def render_combined_exp3(
     out_path: Path,
     view: str,
 ) -> bool:
-    """One figure: both targets (small + large), same source columns (union of all sources)."""
+    """Both targets stacked; each block only columns that exist in the batch (no empty slots)."""
     view = view.upper()
-    sources = all_sources_for_view(groups, view)
-    if not sources or len(groups) < 1:
+    if len(groups) < 1:
+        return False
+    block_pairs = [pairs_for_group_view(g, view) for g in groups]
+    if not any(block_pairs):
         return False
 
-    n = len(sources)
+    n = max(len(p) for p in block_pairs)
     n_blocks = len(groups)
     n_rows = 2 * n_blocks
-    fig_h = EXP3_ROW_H_IN * n_rows + 0.9
+    fig_h = EXP3_ROW_H_IN * n_rows + 1.1
     fig_w = EXP3_COL_W_IN * n + 0.5
     fig, axes = plt.subplots(n_rows, n, figsize=(fig_w, fig_h), squeeze=False)
-    fig.subplots_adjust(top=0.90, bottom=0.05, left=0.03, right=0.99, hspace=0.28, wspace=0.06)
+    fig.subplots_adjust(top=0.90, bottom=0.08, left=0.03, right=0.99, hspace=0.32, wspace=0.06)
 
     block_ious: list[list[float]] = [[] for _ in groups]
     block_scales: list[list[float]] = [[] for _ in groups]
@@ -429,11 +449,11 @@ def render_combined_exp3(
             rotation=90,
             va="center",
         )
-        for j, src_tpl in enumerate(sources):
-            pair = find_pair_in_group(group, src_tpl["source_id"], view)
+        pairs = block_pairs[bi]
+        for j, pair in enumerate(pairs):
             _render_one_column(
                 pair=pair,
-                src_tpl=src_tpl,
+                src_tpl=pair,
                 pair_index=pair_index,
                 pack_root=pack_root,
                 ax_src=axes[row_src, j],
@@ -442,19 +462,19 @@ def render_combined_exp3(
                 scales=block_scales[bi],
                 raws=block_raws[bi],
             )
+        for j in range(len(pairs), n):
+            axes[row_src, j].set_visible(False)
+            axes[row_trg, j].set_visible(False)
 
     fig.suptitle(f"Experiment 3 — cross-patient ({view})", fontsize=11, fontweight="bold", y=0.98)
     footer_parts = []
     for bi, group in enumerate(groups):
         bucket = str(group.get("bucket") or bi)
-        ious = block_ious[bi]
-        scales = block_scales[bi]
-        if ious:
-            footer_parts.append(f"{bucket} mean IoU {sum(ious) / len(ious):.4f} (n={len(ious)})")
-        if scales:
-            footer_parts.append(f"{bucket} mean dist512 {sum(scales) / len(scales):.1f}px")
+        line = format_group_footer(block_ious[bi], block_scales[bi], block_raws[bi])
+        if line:
+            footer_parts.append(f"{bucket}: {line}")
     if footer_parts:
-        fig.text(0.5, 0.01, "  |  ".join(footer_parts), ha="center", fontsize=8)
+        fig.text(0.5, 0.02, "\n".join(footer_parts), ha="center", fontsize=7.5, linespacing=1.35)
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out_path, dpi=180, bbox_inches="tight", pad_inches=0.08)
@@ -486,102 +506,40 @@ def render_group_view(
     )
 
     n = len(cols)
-    fig_h = EXP3_ROW_H_IN * 2 + 0.85
+    fig_h = EXP3_ROW_H_IN * 2 + 1.15
     fig_w = EXP3_COL_W_IN * n + 0.4
     fig, axes = plt.subplots(2, n, figsize=(fig_w, fig_h), squeeze=False)
-    fig.subplots_adjust(top=0.88, bottom=0.10, left=0.04, right=0.99, hspace=0.25, wspace=0.06)
+    fig.subplots_adjust(top=0.86, bottom=0.14, left=0.04, right=0.99, hspace=0.30, wspace=0.06)
 
     ious: list[float] = []
     scales: list[float] = []
     raws: list[float] = []
 
     for j, pair in enumerate(cols):
-        pair_dir = resolve_pair_dir(pair, pair_index)
-        if pair_dir is None:
-            print(f"  missing run for stem {pair_job_stem(pair)!r}", flush=True)
-            axes[0, j].text(0.5, 0.5, "missing run", ha="center", va="center")
-            axes[1, j].set_axis_off()
-            axes[0, j].set_title(source_column_title(pair), fontsize=9, linespacing=1.25)
-            continue
-
-        meta = json.loads((pair_dir / f"{meta_stem(pair_dir)}_pair.json").read_text(encoding="utf-8"))
-        stem = meta["stem"]
-        pt = _load_pt(pair_dir / f"{stem}_correspondence_data.pt")
-        iou, ce = metrics_for_pair(pair_dir, stem)
-        if iou is not None:
-            ious.append(float(iou))
-        if ce:
-            if ce.get("dist_scale_px") is not None:
-                scales.append(float(ce["dist_scale_px"]))
-            raw = ce.get("dist_raw_px", ce.get("dist_native_px"))
-            if raw is not None:
-                raws.append(float(raw))
-
-        src_path = resolve_image(meta["src_path"], pack_root)
-        trg_path = resolve_image(meta["trg_path"], pack_root)
-        src_t = load_display_chw(src_path)
-        trg_t = load_display_chw(trg_path)
-        sx, sy = meta.get("src_xy_512") or [0, 0]
-        src_xy = (float(sx), float(sy))
-        est = _est_xy(pt)
-        src_gt = tuple(meta["src_gt_box_512"]) if meta.get("src_gt_box_512") else None
-        pred = _box_from_pt(pt, "trg_pred_roi_xyxy") or _box_from_pt(pt, "trg_pred_white_roi_xyxy")
-        trg_white = _box_from_pt(pt, "trg_pred_white_roi_xyxy")
-        trg_gt = _infer_trg_gt(
-            meta,
-            center_err=ce,
-            src_gt=src_gt,
-            trg_pred=pred,
-            trg_white=trg_white,
-        )
-
-        draw_cell(
-            axes[0, j],
-            src_t,
-            gt_box=src_gt,
-            pred_box=None,
-            src_xy=src_xy,
-            show_line=False,
-        )
-        draw_cell(
-            axes[1, j],
-            trg_t,
-            gt_box=trg_gt,
-            pred_box=pred,
-            est_xy=est,
-            show_line=True,
-        )
-        axes[0, j].set_title(source_column_title(pair), fontsize=9, linespacing=1.25)
-        foot = format_iou_line(iou) + "\n" + format_center_error_line(ce)
-        axes[1, j].text(
-            0.5,
-            -0.06,
-            foot,
-            transform=axes[1, j].transAxes,
-            ha="center",
-            va="top",
-            fontsize=8,
-            linespacing=1.35,
+        _render_one_column(
+            pair=pair,
+            src_tpl=pair,
+            pair_index=pair_index,
+            pack_root=pack_root,
+            ax_src=axes[0, j],
+            ax_trg=axes[1, j],
+            ious=ious,
+            scales=scales,
+            raws=raws,
         )
 
     fig.suptitle(
-        f"Experiment 3 — bucket «{bucket}»\n{target_line}",
+        f"Experiment 3 — bucket «{bucket}» ({view})\n{target_line}",
         fontsize=11,
         fontweight="bold",
         y=0.98,
     )
-    fig.text(0.02, 0.72, "SOURCE", fontsize=11, fontweight="bold", rotation=90, va="center")
-    fig.text(0.02, 0.38, "TARGET", fontsize=11, fontweight="bold", rotation=90, va="center")
+    fig.text(0.02, 0.68, "SOURCE", fontsize=9, fontweight="bold", rotation=90, va="center")
+    fig.text(0.02, 0.36, "TARGET", fontsize=9, fontweight="bold", rotation=90, va="center")
 
-    avg_parts = []
-    if ious:
-        avg_parts.append(f"mean IoU {sum(ious) / len(ious):.4f}  (n={len(ious)})")
-    if scales:
-        avg_parts.append(f"mean center dist (512 px) {sum(scales) / len(scales):.1f}")
-    if raws:
-        avg_parts.append(f"mean center dist (raw px) {sum(raws) / len(raws):.1f}")
-    if avg_parts:
-        fig.text(0.5, 0.03, "  |  ".join(avg_parts), ha="center", fontsize=10)
+    summary = format_group_footer(ious, scales, raws)
+    if summary:
+        fig.text(0.5, 0.04, summary, ha="center", fontsize=9)
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out_path, dpi=180, bbox_inches="tight", pad_inches=0.08)
@@ -613,9 +571,9 @@ def main() -> None:
         choices=("small", "large", "both"),
     )
     ap.add_argument(
-        "--separate-buckets",
+        "--combined-only",
         action="store_true",
-        help="Also write per-bucket exp3_{small|large}_target_*.png (default: combined only)",
+        help="Skip per-bucket exp3_{small|large}_target_*.png (default: write both)",
     )
     ap.add_argument(
         "--out-dir",
@@ -658,7 +616,7 @@ def main() -> None:
                 view=view,
             )
 
-    if args.separate_buckets:
+    if not args.combined_only:
         for group in active_groups:
             bucket = str(group.get("bucket") or "")
             target = group.get("target") or {}

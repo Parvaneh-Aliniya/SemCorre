@@ -27,6 +27,7 @@ if [[ -z "$PACK" ]]; then
   case "$TAG" in
     *exp1*) PACK="${SCRATCH}/sk_review/roi_overlays_exp1_views" ;;
     *exp3*) PACK="${SCRATCH}/sk_review/roi_overlays_exp3_cross" ;;
+    *exp2*) PACK="${SCRATCH}/sk_review/roi_overlays_exp2_lateral" ;;
     *exp5*) PACK="${SCRATCH}/sk_review/roi_overlays_exp5_temporal" ;;
     *) PACK="${SCRATCH}/sk_review/roi_overlays_cancer5" ;;
   esac
@@ -75,6 +76,13 @@ if [[ "$TAG" == *exp3* ]]; then
   "$PYTHON" scripts/draw_exp3_group_compare.py \
     --run-root "$RUN_ROOT" \
     --set-json data/exp_sets/exp3_cross_patient.json \
+    --pack-dir "$PACK"
+fi
+
+if [[ "$TAG" == *exp5* ]]; then
+  echo "Rebuilding exp5 chain overview PNGs from *_chain.json (no GPU)..."
+  "$PYTHON" scripts/batch_mammo_correspondence.py \
+    --rebuild-exp5-overviews "$RUN_ROOT" \
     --pack-dir "$PACK"
 fi
 
