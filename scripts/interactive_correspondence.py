@@ -547,14 +547,22 @@ def save_correspondence_figure(
     src_exam_id: str = "",
     trg_exam_id: str = "",
     center_error: Optional[dict] = None,
+    show_trg_gt: bool = True,
+    show_src_gt: bool = True,
+    roundtrip_src_kp: Optional[tuple[float, float]] = None,
 ):
-    """Side-by-side: green GT, blue pred. No heatmap (old blue/pink) boxes."""
+    """Side-by-side: green GT, blue pred. ``show_trg_gt=False`` hides target GT only."""
     display = torch.cat([src_display, trg_display], dim=2).permute(1, 2, 0).detach().cpu().numpy()
     sx, sy = src_kp[0].item(), src_kp[1].item()
     tx, ty = est_kp[0].item(), est_kp[1].item()
     x_off = 512.0
+    pred_draw = trg_pred_box if trg_pred_box is not None else trg_pred_white_box
     src_header_box = src_gt_box or (src_all_gt_boxes[0] if src_all_gt_boxes else None)
-    trg_header_box = trg_gt_box or (trg_all_gt_boxes[0] if trg_all_gt_boxes else None)
+    if show_trg_gt:
+        trg_header_box = trg_gt_box or (trg_all_gt_boxes[0] if trg_all_gt_boxes else None)
+    else:
+        trg_header_box = pred_draw
+    trg_center_err = center_error if show_trg_gt else None
     src_header = format_panel_header(
         role="SOURCE",
         path=source_name,
@@ -568,7 +576,7 @@ def save_correspondence_figure(
         box=trg_header_box,
         kp=(tx, ty),
         exam_id=trg_exam_id,
-        extra=format_panel_metrics(iou=roi_iou_pred, center_err=center_error),
+        extra=format_panel_metrics(iou=roi_iou_pred, center_err=trg_center_err),
     )
 
     fig = plt.figure(figsize=(20, 13))
@@ -584,17 +592,36 @@ def save_correspondence_figure(
     _add_direction_arrow(
         ax, sx, sy, tx + x_off, ty, color=COLOR_FORWARD_LINE, linewidth=line_width, zorder=4
     )
-    ax.scatter([sx, tx + x_off], [sy, ty], c=COLOR_FORWARD_LINE, s=40, zorder=5)
+    scatter_x = [sx, tx + x_off]
+    scatter_y = [sy, ty]
+    scatter_c = [COLOR_FORWARD_LINE, COLOR_FORWARD_LINE]
+    if roundtrip_src_kp is not None:
+        bx, by = roundtrip_src_kp
+        _add_direction_arrow(
+            ax, tx + x_off, ty, bx, by, color=COLOR_BACK_LINE, linewidth=line_width, zorder=4
+        )
+        scatter_x.append(bx)
+        scatter_y.append(by)
+        scatter_c.append(COLOR_BACK_LINE)
+    ax.scatter(scatter_x, scatter_y, c=scatter_c, s=40, zorder=5)
 
-    src_boxes = list(src_all_gt_boxes or [])
-    if src_gt_box is not None and not any(_boxes_close(src_gt_box, b) for b in src_boxes):
-        src_boxes.insert(0, src_gt_box)
-    trg_boxes = list(trg_all_gt_boxes or [])
-    if trg_gt_box is not None and not any(_boxes_close(trg_gt_box, b) for b in trg_boxes):
-        trg_boxes.insert(0, trg_gt_box)
+    src_boxes: list = []
+    if show_src_gt:
+        src_boxes = list(src_all_gt_boxes or [])
+        if src_gt_box is not None and not any(_boxes_close(src_gt_box, b) for b in src_boxes):
+            src_boxes.insert(0, src_gt_box)
+    trg_boxes: list = []
+    if show_trg_gt:
+        trg_boxes = list(trg_all_gt_boxes or [])
+        if trg_gt_box is not None and not any(_boxes_close(trg_gt_box, b) for b in trg_boxes):
+            trg_boxes.insert(0, trg_gt_box)
 
-    if src_boxes:
-        _draw_gt_roi_list(ax, src_boxes, 0.0)
+    if show_src_gt and src_gt_box is not None:
+        _draw_roi_rect(
+            ax, src_gt_box, 0.0, edgecolor=COLOR_GT, linestyle="-", label="GT ROI"
+        )
+    if show_src_gt and src_boxes:
+        _draw_gt_roi_list(ax, src_boxes, 0.0, primary=src_gt_box)
         bx0 = src_gt_box or src_boxes[0]
         ax.scatter(
             [0.5 * (bx0[0] + bx0[2])],
@@ -616,10 +643,9 @@ def save_correspondence_figure(
             marker="x",
             zorder=7,
         )
-    pred_draw = trg_pred_box if trg_pred_box is not None else trg_pred_white_box
     if pred_draw is not None:
         _draw_roi_rect(ax, pred_draw, x_off, edgecolor=COLOR_PRED, linestyle="-", label="Pred ROI")
-    if trg_gt_box is not None and center_error:
+    if show_trg_gt and trg_gt_box is not None and center_error:
         gx, gy = box_center_xyxy(trg_gt_box)
         ax.plot(
             [gx + x_off, tx + x_off],

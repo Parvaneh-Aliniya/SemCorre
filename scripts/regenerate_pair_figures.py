@@ -12,6 +12,13 @@ Vista (pack on scratch):
   python scripts/regenerate_pair_figures.py \\
     --run-root $SCRATCH/semcorre_batch_outputs/batch_experiments/vista_exp1_views \\
     --pack-dir $SCRATCH/sk_review/roi_overlays_exp1_views
+
+Exp2 — target panel without GT overlays (keeps source GT + pred point/ROI):
+  python scripts/regenerate_pair_figures.py \\
+    --run-root path/to/vista_exp2_lateral \\
+    --pack-dir path/to/roi_overlays_exp2_lateral \\
+    --no-trg-gt
+  # writes *_correspondences_estimated_no_trg_gt.png (use --in-place to overwrite)
 """
 
 from __future__ import annotations
@@ -63,6 +70,65 @@ def _box_from_pt(data: dict, key: str) -> tuple[float, float, float, float] | No
     if not v:
         return None
     return tuple(float(x) for x in v)
+
+
+def resolve_pack_overlay_path(pack_root: Path | None, path_str: str) -> Path:
+    """Prefer ROI-overlay PNG (red box on mammo) for figure display; fall back to clean."""
+    if not pack_root:
+        return resolve_image_path(path_str, pack_root=None, reviews_root=None)
+    s = path_str.replace("\\", "/")
+    p = Path(s)
+    if p.is_file():
+        return p
+    try:
+        rel = Path(s.split("roi_overlays_exp2_lateral/")[-1]) if "roi_overlays" in s else Path(s).name
+    except Exception:
+        rel = Path(s).name
+    for rec in batch.load_roi_table(pack_root):
+        if rec.image_name == Path(s).name or str(rec.image_path).replace("\\", "/") in s:
+            ov = pack_root / rec.image_path
+            if ov.is_file():
+                return ov
+    overlay = pack_root / rel
+    if overlay.is_file():
+        return overlay
+    return batch.resolve_clean_path(pack_root, s)
+
+
+def _resolve_src_gt(
+    meta: dict,
+    pack_root: Path | None,
+    src_png: Path | None = None,
+) -> tuple[tuple[float, float, float, float] | None, list[tuple[float, float, float, float]]]:
+    """Source GT must stay on --no-trg-gt redraws; recover from pack if pair.json omitted it."""
+    if meta.get("src_gt_box_512"):
+        box = tuple(float(x) for x in meta["src_gt_box_512"])
+        all_b = [tuple(b) for b in meta.get("src_all_gt_512") or []]
+        if not all_b:
+            all_b = [box]
+        return box, all_b
+    src_path_s = str(meta.get("src_path", "")).replace("\\", "/")
+    if pack_root and (src_path_s or src_png):
+        src_p = src_png or resolve_pack_overlay_path(pack_root, src_path_s)
+        if src_p.is_file():
+            records = batch.load_roi_table(pack_root)
+            for rec in records:
+                if rec.image_name != src_p.name and Path(rec.image_path).name != src_p.name:
+                    if src_path_s and rec.image_name not in src_path_s:
+                        continue
+                box, _, _ = batch.roi_on_record(src_p, rec, require_on_tissue=False)
+                if box:
+                    return box, [box]
+    xy = meta.get("src_xy_512")
+    if xy and len(xy) >= 2:
+        ref = meta.get("trg_gt_box_512") or meta.get("src_gt_box_512")
+        w, h = 45.0, 35.0
+        if ref and len(ref) >= 4:
+            w = max(8.0, float(ref[2]) - float(ref[0]))
+            h = max(8.0, float(ref[3]) - float(ref[1]))
+        box = box_from_center_size(float(xy[0]), float(xy[1]), w, h)
+        return box, [box]
+    return None, []
 
 
 def _infer_trg_gt(
@@ -184,7 +250,16 @@ def load_display_chw(path: Path) -> torch.Tensor:
     return torch.from_numpy(arr.transpose(2, 0, 1).copy())
 
 
-def regen_one(pair_dir: Path, *, pack_root: Path | None, reviews_root: Path | None) -> bool:
+def regen_one(
+    pair_dir: Path,
+    *,
+    pack_root: Path | None,
+    reviews_root: Path | None,
+    show_trg_gt: bool = True,
+    fig_suffix: str = "",
+    overlay_display: bool = False,
+    include_roundtrip_arrow: bool = False,
+) -> bool:
     pair_jsons = list(pair_dir.glob("*_pair.json"))
     if not pair_jsons:
         return False
@@ -195,10 +270,14 @@ def regen_one(pair_dir: Path, *, pack_root: Path | None, reviews_root: Path | No
         print(f"  skip {pair_dir.name}: no {stem}_correspondence_data.pt")
         return False
 
-    src_path = resolve_image_path(meta["src_path"], pack_root=pack_root, reviews_root=reviews_root)
-    trg_path = resolve_image_path(meta["trg_path"], pack_root=pack_root, reviews_root=reviews_root)
-    src_t = load_display_chw(src_path)
-    trg_t = load_display_chw(trg_path)
+    if overlay_display and pack_root is not None:
+        src_path = resolve_pack_overlay_path(pack_root, str(meta["src_path"]))
+        trg_path = resolve_pack_overlay_path(pack_root, str(meta["trg_path"]))
+    else:
+        src_path = resolve_image_path(meta["src_path"], pack_root=pack_root, reviews_root=reviews_root)
+        trg_path = resolve_image_path(meta["trg_path"], pack_root=pack_root, reviews_root=reviews_root)
+    src_t = batch.load_image_chw(src_path)
+    trg_t = batch.load_image_chw(trg_path)
 
     sx, sy = meta["src_xy_512"]
     est = _est_xy_from_pt(fwd_pt)
@@ -211,8 +290,11 @@ def regen_one(pair_dir: Path, *, pack_root: Path | None, reviews_root: Path | No
         print(f"  skip {pair_dir.name}: no forward target point")
         return False
 
-    src_gt = tuple(meta["src_gt_box_512"]) if meta.get("src_gt_box_512") else None
-    src_all = [tuple(b) for b in meta.get("src_all_gt_512") or []]
+    src_gt, src_all = _resolve_src_gt(meta, pack_root, src_png=src_path)
+    if src_gt is None:
+        print(f"  warning {pair_dir.name}: no source GT box (source panel will have no green ROI)", flush=True)
+    else:
+        print(f"  source GT 512 xyxy={[round(x, 1) for x in src_gt]}", flush=True)
     trg_all = [tuple(b) for b in meta.get("trg_all_gt_512") or []]
     trg_pred = _box_from_pt(fwd_pt, "trg_pred_roi_xyxy")
     trg_white = _box_from_pt(fwd_pt, "trg_pred_white_roi_xyxy")
@@ -237,6 +319,14 @@ def regen_one(pair_dir: Path, *, pack_root: Path | None, reviews_root: Path | No
     m_ex = re.search(r"_ex(\d+)", stem)
     exam_id = m_ex.group(1) if m_ex else ""
 
+    roundtrip_src_kp = None
+    if include_roundtrip_arrow:
+        rt = meta.get("roundtrip_back") or {}
+        bk = rt.get("back_source_kp_512") or {}
+        if "x" in bk and "y" in bk:
+            roundtrip_src_kp = (float(bk["x"]), float(bk["y"]))
+
+    corr_name = f"{stem}_correspondences_estimated{fig_suffix}.png"
     save_correspondence_figure(
         src_t,
         trg_t,
@@ -244,7 +334,7 @@ def regen_one(pair_dir: Path, *, pack_root: Path | None, reviews_root: Path | No
         torch.tensor([est[0], est[1]]),
         source_name=str(src_path),
         target_name=str(trg_path),
-        save_path=pair_dir / f"{stem}_correspondences_estimated.png",
+        save_path=pair_dir / corr_name,
         src_gt_box=src_gt,
         trg_gt_box=trg_gt,
         src_all_gt_boxes=src_all,
@@ -259,6 +349,9 @@ def regen_one(pair_dir: Path, *, pack_root: Path | None, reviews_root: Path | No
         src_exam_id=exam_id,
         trg_exam_id=exam_id,
         center_error=center_err,
+        show_trg_gt=show_trg_gt,
+        show_src_gt=True,
+        roundtrip_src_kp=roundtrip_src_kp,
     )
 
     rt = meta.get("roundtrip_back")
@@ -341,7 +434,39 @@ def main() -> None:
         help="Experiments/views on PC (patient_*/date_Lat_view_*.png)",
     )
     p.add_argument("--patient", type=str, default="", help="Optional filter, e.g. 22911591")
+    p.add_argument(
+        "--no-trg-gt",
+        action="store_true",
+        help="Omit target-panel GT boxes, GT center mark, and center-error line (source GT unchanged).",
+    )
+    p.add_argument(
+        "--fig-suffix",
+        type=str,
+        default="",
+        help="Insert before .png (default: _no_trg_gt when --no-trg-gt, else overwrite main figure).",
+    )
+    p.add_argument(
+        "--in-place",
+        action="store_true",
+        help="With --no-trg-gt, overwrite *_correspondences_estimated.png instead of _no_trg_gt.",
+    )
+    p.add_argument(
+        "--overlay-display",
+        action="store_true",
+        help="Use pack ROI-overlay PNGs (red ROI on mammo) for figure panels.",
+    )
+    p.add_argument(
+        "--no-roundtrip-arrow",
+        action="store_true",
+        help="With --no-trg-gt, omit hot-pink round-trip arrow (target → source).",
+    )
     args = p.parse_args()
+    fig_suffix = args.fig_suffix
+    if args.no_trg_gt and not fig_suffix and not args.in_place:
+        fig_suffix = "_no_trg_gt"
+    show_trg_gt = not args.no_trg_gt
+    overlay_display = args.overlay_display or args.no_trg_gt
+    include_roundtrip_arrow = args.no_trg_gt and not args.no_roundtrip_arrow
 
     run_root = Path(args.run_root).expanduser().resolve()
     pack_root = Path(args.pack_dir).expanduser().resolve() if args.pack_dir else None
@@ -358,7 +483,15 @@ def main() -> None:
         if not list(pair_dir.glob("*_pair.json")):
             continue
         try:
-            if regen_one(pair_dir, pack_root=pack_root, reviews_root=reviews_root):
+            if regen_one(
+                pair_dir,
+                pack_root=pack_root,
+                reviews_root=reviews_root,
+                show_trg_gt=show_trg_gt,
+                fig_suffix=fig_suffix,
+                overlay_display=overlay_display,
+                include_roundtrip_arrow=include_roundtrip_arrow,
+            ):
                 n_ok += 1
                 print("redrew", pair_dir.relative_to(run_root))
         except Exception as exc:
