@@ -1847,6 +1847,7 @@ def run_roundtrip_back_to_source(
         ),
         encoding="utf-8",
     )
+    main_pair_path = save_folder / f"{file_stem}_correspondences_estimated.png"
     return {
         "forward_target_kp_512": {"x": float(tx), "y": float(ty)},
         "back_source_kp_512": {"x": bx, "y": by},
