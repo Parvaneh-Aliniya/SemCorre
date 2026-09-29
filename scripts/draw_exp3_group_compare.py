@@ -1,11 +1,9 @@
-"""Exp3 review grid: one target, many sources (small / large buckets).
+"""Exp3 review grid: cross-patient source → target (small / large buckets).
 
-Two rows × N columns (one column per source patient, fixed target + view):
-  Row 1 — SOURCE mammogram (GT ROI + query point)
-  Row 2 — TARGET mammogram (same patient each column; pred ROI + line per transfer)
+Default output: ``exp3_combined_{CC|MLO}.png`` — both targets stacked, columns = union
+of all source patients; thin ROI boxes, compact layout.
 
-Column title = source metadata. Figure title states the shared target once.
-Column footer = IoU + center distance; figure footer = column averages.
+Per-bucket legacy PNGs: pass ``--separate-buckets``.
 
 Usage:
   python scripts/draw_exp3_group_compare.py \\
@@ -23,6 +21,7 @@ import sys
 from pathlib import Path
 
 import matplotlib.pyplot as plt
+import matplotlib.patches as patches
 import numpy as np
 import torch
 from PIL import Image
@@ -35,8 +34,6 @@ from interactive_correspondence import (  # noqa: E402
     COLOR_FORWARD_LINE,
     COLOR_GT,
     COLOR_PRED,
-    ROI_LINEWIDTH,
-    _draw_roi_rect,
     box_center_xyxy,
     format_center_error_line,
     format_iou_line,
@@ -46,6 +43,11 @@ from regenerate_pair_figures import _infer_trg_gt  # noqa: E402
 RES = 512
 BANNER_H = 80
 EXP_DIR = "exp3_cross_patient"
+EXP3_ROI_LW = 1.6
+EXP3_POINT_S = 16
+EXP3_GT_X_S = 12
+EXP3_COL_W_IN = 2.05
+EXP3_ROW_H_IN = 2.15
 
 
 def load_display_chw(path: Path) -> torch.Tensor:
@@ -176,6 +178,29 @@ def _box_from_pt(pt: dict | None, key: str):
     return tuple(float(x) for x in v)
 
 
+def _draw_roi_rect_thin(
+    ax,
+    box: tuple[float, float, float, float],
+    x_offset: float,
+    *,
+    edgecolor: str,
+    linestyle: str = "-",
+):
+    x1, y1, x2, y2 = box
+    ax.add_patch(
+        patches.Rectangle(
+            (x1 + x_offset, y1),
+            x2 - x1,
+            y2 - y1,
+            linewidth=EXP3_ROI_LW,
+            edgecolor=edgecolor,
+            facecolor="none",
+            linestyle=linestyle,
+            zorder=6,
+        )
+    )
+
+
 def _est_xy(pt: dict | None) -> tuple[float, float] | None:
     if not pt:
         return None
@@ -204,27 +229,218 @@ def draw_cell(
     ax.set_xlim(0, RES)
     ax.set_ylim(RES, 0)
     if gt_box is not None:
-        _draw_roi_rect(ax, gt_box, 0.0, edgecolor=COLOR_GT, linestyle="-", label="_")
+        _draw_roi_rect_thin(ax, gt_box, 0.0, edgecolor=COLOR_GT)
         gx, gy = box_center_xyxy(gt_box)
-        ax.scatter([gx], [gy], c=COLOR_GT, s=22, marker="x", zorder=7)
+        ax.scatter([gx], [gy], c=COLOR_GT, s=EXP3_GT_X_S, marker="x", zorder=7, linewidths=0.8)
     if pred_box is not None:
-        _draw_roi_rect(ax, pred_box, 0.0, edgecolor=COLOR_PRED, linestyle="-", label="_")
+        _draw_roi_rect_thin(ax, pred_box, 0.0, edgecolor=COLOR_PRED)
     if src_xy is not None:
-        ax.scatter([src_xy[0]], [src_xy[1]], c=COLOR_FORWARD_LINE, s=40, zorder=8)
+        ax.scatter(
+            [src_xy[0]],
+            [src_xy[1]],
+            c=COLOR_FORWARD_LINE,
+            s=EXP3_POINT_S,
+            zorder=8,
+            linewidths=0.6,
+            edgecolors="white",
+        )
     if est_xy is not None:
-        ax.scatter([est_xy[0]], [est_xy[1]], c=COLOR_FORWARD_LINE, s=40, zorder=8)
+        ax.scatter(
+            [est_xy[0]],
+            [est_xy[1]],
+            c=COLOR_FORWARD_LINE,
+            s=EXP3_POINT_S,
+            zorder=8,
+            linewidths=0.6,
+            edgecolors="white",
+        )
     if show_line and gt_box is not None and est_xy is not None:
         gx, gy = box_center_xyxy(gt_box)
-        ax.plot([gx, est_xy[0]], [gy, est_xy[1]], color="cyan", linewidth=1.4, linestyle=":", zorder=6)
+        ax.plot([gx, est_xy[0]], [gy, est_xy[1]], color="cyan", linewidth=1.0, linestyle=":", zorder=6)
+    ax.margins(0)
     ax.set_axis_off()
 
 
 def source_column_title(pair: dict) -> str:
     return (
-        f"SOURCE\n"
-        f"Patient {pair['source_id']}\n"
-        f"{pair['source_date']}  {pair['source_laterality']} {pair['source_view']}"
+        f"p{pair['source_id']}  {pair['source_date']}\n"
+        f"{pair['source_laterality']} {pair['source_view']}"
     )
+
+
+def all_sources_for_view(groups: list[dict], view: str) -> list[dict]:
+    """Unique sources (union of small + large buckets) for this target view."""
+    view = view.upper()
+    by_id: dict[str, dict] = {}
+    for group in groups:
+        for p in group.get("pairs") or []:
+            if str(p["target_view"]).upper() != view:
+                continue
+            sid = str(p["source_id"])
+            if sid not in by_id:
+                by_id[sid] = p
+    return [by_id[k] for k in sorted(by_id.keys(), key=lambda x: int(x) if x.isdigit() else x)]
+
+
+def find_pair_in_group(group: dict, source_id: str, view: str) -> dict | None:
+    view = view.upper()
+    for p in group.get("pairs") or []:
+        if str(p["source_id"]) != str(source_id):
+            continue
+        if str(p["target_view"]).upper() != view:
+            continue
+        return p
+    return None
+
+
+def _render_one_column(
+    *,
+    pair: dict | None,
+    src_tpl: dict,
+    pair_index: dict[str, Path],
+    pack_root: Path | None,
+    ax_src,
+    ax_trg,
+    ious: list[float],
+    scales: list[float],
+    raws: list[float],
+) -> None:
+    ax_src.set_title(source_column_title(src_tpl), fontsize=7, linespacing=1.2, pad=3)
+    if pair is None:
+        ax_src.text(0.5, 0.5, "no pair", ha="center", va="center", fontsize=8, transform=ax_src.transAxes)
+        ax_trg.set_axis_off()
+        return
+    pair_dir = resolve_pair_dir(pair, pair_index)
+    if pair_dir is None:
+        print(f"  missing run for stem {pair_job_stem(pair)!r}", flush=True)
+        ax_src.text(0.5, 0.5, "missing run", ha="center", va="center", fontsize=8, transform=ax_src.transAxes)
+        ax_trg.set_axis_off()
+        return
+
+    meta = json.loads((pair_dir / f"{meta_stem(pair_dir)}_pair.json").read_text(encoding="utf-8"))
+    stem = meta["stem"]
+    pt = _load_pt(pair_dir / f"{stem}_correspondence_data.pt")
+    iou, ce = metrics_for_pair(pair_dir, stem)
+    if iou is not None:
+        ious.append(float(iou))
+    if ce:
+        if ce.get("dist_scale_px") is not None:
+            scales.append(float(ce["dist_scale_px"]))
+        raw = ce.get("dist_raw_px", ce.get("dist_native_px"))
+        if raw is not None:
+            raws.append(float(raw))
+
+    src_path = resolve_image(meta["src_path"], pack_root)
+    trg_path = resolve_image(meta["trg_path"], pack_root)
+    src_t = load_display_chw(src_path)
+    trg_t = load_display_chw(trg_path)
+    sx, sy = meta.get("src_xy_512") or [0, 0]
+    src_xy = (float(sx), float(sy))
+    est = _est_xy(pt)
+    src_gt = tuple(meta["src_gt_box_512"]) if meta.get("src_gt_box_512") else None
+    pred = _box_from_pt(pt, "trg_pred_roi_xyxy") or _box_from_pt(pt, "trg_pred_white_roi_xyxy")
+    trg_white = _box_from_pt(pt, "trg_pred_white_roi_xyxy")
+    trg_gt = _infer_trg_gt(
+        meta,
+        center_err=ce,
+        src_gt=src_gt,
+        trg_pred=pred,
+        trg_white=trg_white,
+    )
+
+    draw_cell(ax_src, src_t, gt_box=src_gt, pred_box=None, src_xy=src_xy, show_line=False)
+    draw_cell(ax_trg, trg_t, gt_box=trg_gt, pred_box=pred, est_xy=est, show_line=True)
+    foot = format_iou_line(iou) + "\n" + format_center_error_line(ce)
+    ax_trg.text(
+        0.5,
+        -0.02,
+        foot,
+        transform=ax_trg.transAxes,
+        ha="center",
+        va="top",
+        fontsize=6.5,
+        linespacing=1.25,
+    )
+
+
+def render_combined_exp3(
+    *,
+    groups: list[dict],
+    pair_index: dict[str, Path],
+    pack_root: Path | None,
+    out_path: Path,
+    view: str,
+) -> bool:
+    """One figure: both targets (small + large), same source columns (union of all sources)."""
+    view = view.upper()
+    sources = all_sources_for_view(groups, view)
+    if not sources or len(groups) < 1:
+        return False
+
+    n = len(sources)
+    n_blocks = len(groups)
+    n_rows = 2 * n_blocks
+    fig_h = EXP3_ROW_H_IN * n_rows + 0.9
+    fig_w = EXP3_COL_W_IN * n + 0.5
+    fig, axes = plt.subplots(n_rows, n, figsize=(fig_w, fig_h), squeeze=False)
+    fig.subplots_adjust(top=0.90, bottom=0.05, left=0.03, right=0.99, hspace=0.28, wspace=0.06)
+
+    block_ious: list[list[float]] = [[] for _ in groups]
+    block_scales: list[list[float]] = [[] for _ in groups]
+    block_raws: list[list[float]] = [[] for _ in groups]
+
+    for bi, group in enumerate(groups):
+        bucket = str(group.get("bucket") or bi)
+        target = group.get("target") or {}
+        t0 = next((p for p in group.get("pairs") or [] if str(p["target_view"]).upper() == view), None)
+        if t0 is None:
+            continue
+        target_line = (
+            f"Target «{bucket}»: p{t0['target_id']}  {t0['target_date']}  "
+            f"{t0['target_laterality']} {t0['target_view']}"
+        )
+        row_src, row_trg = 2 * bi, 2 * bi + 1
+        fig.text(
+            0.008,
+            1.0 - (row_src + 0.5) / n_rows * 0.86 - 0.06,
+            target_line,
+            fontsize=8,
+            fontweight="bold",
+            rotation=90,
+            va="center",
+        )
+        for j, src_tpl in enumerate(sources):
+            pair = find_pair_in_group(group, src_tpl["source_id"], view)
+            _render_one_column(
+                pair=pair,
+                src_tpl=src_tpl,
+                pair_index=pair_index,
+                pack_root=pack_root,
+                ax_src=axes[row_src, j],
+                ax_trg=axes[row_trg, j],
+                ious=block_ious[bi],
+                scales=block_scales[bi],
+                raws=block_raws[bi],
+            )
+
+    fig.suptitle(f"Experiment 3 — cross-patient ({view})", fontsize=11, fontweight="bold", y=0.98)
+    footer_parts = []
+    for bi, group in enumerate(groups):
+        bucket = str(group.get("bucket") or bi)
+        ious = block_ious[bi]
+        scales = block_scales[bi]
+        if ious:
+            footer_parts.append(f"{bucket} mean IoU {sum(ious) / len(ious):.4f} (n={len(ious)})")
+        if scales:
+            footer_parts.append(f"{bucket} mean dist512 {sum(scales) / len(scales):.1f}px")
+    if footer_parts:
+        fig.text(0.5, 0.01, "  |  ".join(footer_parts), ha="center", fontsize=8)
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_path, dpi=180, bbox_inches="tight", pad_inches=0.08)
+    plt.close(fig)
+    print(f"  wrote {out_path}")
+    return True
 
 
 def render_group_view(
@@ -250,10 +466,10 @@ def render_group_view(
     )
 
     n = len(cols)
-    fig_h = 6.2 + 0.15 * n
-    fig_w = max(8, 3.4 * n)
+    fig_h = EXP3_ROW_H_IN * 2 + 0.85
+    fig_w = EXP3_COL_W_IN * n + 0.4
     fig, axes = plt.subplots(2, n, figsize=(fig_w, fig_h), squeeze=False)
-    fig.subplots_adjust(top=0.78, bottom=0.16, left=0.06, hspace=0.35, wspace=0.08)
+    fig.subplots_adjust(top=0.88, bottom=0.10, left=0.04, right=0.99, hspace=0.25, wspace=0.06)
 
     ious: list[float] = []
     scales: list[float] = []
@@ -348,7 +564,7 @@ def render_group_view(
         fig.text(0.5, 0.03, "  |  ".join(avg_parts), ha="center", fontsize=10)
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(out_path, dpi=160, bbox_inches="tight")
+    fig.savefig(out_path, dpi=180, bbox_inches="tight", pad_inches=0.08)
     plt.close(fig)
     print(f"  wrote {out_path}")
     return True
@@ -377,6 +593,11 @@ def main() -> None:
         choices=("small", "large", "both"),
     )
     ap.add_argument(
+        "--separate-buckets",
+        action="store_true",
+        help="Also write per-bucket exp3_{small|large}_target_*.png (default: combined only)",
+    )
+    ap.add_argument(
         "--out-dir",
         type=str,
         default="",
@@ -398,24 +619,42 @@ def main() -> None:
         sys.exit(1)
     print(f"Indexed {n_dirs} exp3 pair folder(s)")
 
-    for group in groups:
-        bucket = str(group.get("bucket") or "")
-        if args.bucket != "both" and bucket != args.bucket:
-            continue
-        target = group.get("target") or {}
-        pairs = group.get("pairs") or []
-        views = sorted({str(p["target_view"]).upper() for p in pairs})
+    active_groups = [
+        g
+        for g in groups
+        if args.bucket == "both" or str(g.get("bucket") or "") == args.bucket
+    ]
+    all_pairs = [p for g in active_groups for p in (g.get("pairs") or [])]
+    views = sorted({str(p["target_view"]).upper() for p in all_pairs})
+
+    if len(active_groups) >= 1:
         for view in views:
-            out_path = out_dir / f"exp3_{bucket}_target_{target.get('id')}_{view}.png"
-            render_group_view(
-                bucket=bucket,
-                target=target,
-                pairs=pairs,
+            out_path = out_dir / f"exp3_combined_{view}.png"
+            render_combined_exp3(
+                groups=active_groups,
                 pair_index=pair_index,
                 pack_root=pack_root,
                 out_path=out_path,
                 view=view,
             )
+
+    if args.separate_buckets:
+        for group in active_groups:
+            bucket = str(group.get("bucket") or "")
+            target = group.get("target") or {}
+            pairs = group.get("pairs") or []
+            g_views = sorted({str(p["target_view"]).upper() for p in pairs})
+            for view in g_views:
+                out_path = out_dir / f"exp3_{bucket}_target_{target.get('id')}_{view}.png"
+                render_group_view(
+                    bucket=bucket,
+                    target=target,
+                    pairs=pairs,
+                    pair_index=pair_index,
+                    pack_root=pack_root,
+                    out_path=out_path,
+                    view=view,
+                )
 
 
 if __name__ == "__main__":
