@@ -298,6 +298,16 @@ def regen_one(
     trg_all = [tuple(b) for b in meta.get("trg_all_gt_512") or []]
     trg_pred = _box_from_pt(fwd_pt, "trg_pred_roi_xyxy")
     trg_white = _box_from_pt(fwd_pt, "trg_pred_white_roi_xyxy")
+    if trg_pred is None and trg_white is not None:
+        trg_pred = trg_white
+    if trg_pred is None and est is not None:
+        ref = src_gt
+        if ref is None and meta.get("src_gt_box_512"):
+            ref = tuple(float(x) for x in meta["src_gt_box_512"])
+        if ref is not None:
+            w = max(8.0, ref[2] - ref[0])
+            h = max(8.0, ref[3] - ref[1])
+            trg_pred = box_from_center_size(est[0], est[1], w, h)
     center_err = None
     ce_path = pair_dir / f"{stem}_center_error.json"
     if ce_path.is_file():
@@ -456,9 +466,9 @@ def main() -> None:
         help="Use pack ROI-overlay PNGs (red ROI on mammo) for figure panels.",
     )
     p.add_argument(
-        "--no-roundtrip-arrow",
+        "--with-roundtrip-arrow",
         action="store_true",
-        help="With --no-trg-gt, omit hot-pink round-trip arrow (target → source).",
+        help="Add hot-pink round-trip arrow (target → source) when pair.json has roundtrip_back.",
     )
     args = p.parse_args()
     fig_suffix = args.fig_suffix
@@ -466,7 +476,7 @@ def main() -> None:
         fig_suffix = "_no_trg_gt"
     show_trg_gt = not args.no_trg_gt
     overlay_display = args.overlay_display or args.no_trg_gt
-    include_roundtrip_arrow = args.no_trg_gt and not args.no_roundtrip_arrow
+    include_roundtrip_arrow = args.with_roundtrip_arrow
 
     run_root = Path(args.run_root).expanduser().resolve()
     pack_root = Path(args.pack_dir).expanduser().resolve() if args.pack_dir else None

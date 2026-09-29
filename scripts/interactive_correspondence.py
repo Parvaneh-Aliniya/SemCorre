@@ -551,7 +551,7 @@ def save_correspondence_figure(
     show_src_gt: bool = True,
     roundtrip_src_kp: Optional[tuple[float, float]] = None,
 ):
-    """Side-by-side: green GT, blue pred. ``show_trg_gt=False`` hides target GT only."""
+    """Side-by-side: green GT, blue pred. ``show_trg_gt=False`` hides target green GT overlays only (pred ROI, IoU, center dist stay)."""
     display = torch.cat([src_display, trg_display], dim=2).permute(1, 2, 0).detach().cpu().numpy()
     sx, sy = src_kp[0].item(), src_kp[1].item()
     tx, ty = est_kp[0].item(), est_kp[1].item()
@@ -562,7 +562,7 @@ def save_correspondence_figure(
         trg_header_box = trg_gt_box or (trg_all_gt_boxes[0] if trg_all_gt_boxes else None)
     else:
         trg_header_box = pred_draw
-    trg_center_err = center_error if show_trg_gt else None
+    trg_center_err = center_error
     src_header = format_panel_header(
         role="SOURCE",
         path=source_name,
@@ -645,7 +645,7 @@ def save_correspondence_figure(
         )
     if pred_draw is not None:
         _draw_roi_rect(ax, pred_draw, x_off, edgecolor=COLOR_PRED, linestyle="-", label="Pred ROI")
-    if show_trg_gt and trg_gt_box is not None and center_error:
+    if trg_gt_box is not None and center_error:
         gx, gy = box_center_xyxy(trg_gt_box)
         ax.plot(
             [gx + x_off, tx + x_off],
