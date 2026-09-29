@@ -23,7 +23,6 @@ from typing import Optional
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 from matplotlib.lines import Line2D
-from matplotlib.patches import FancyArrowPatch
 import numpy as np
 import torch
 from PIL import Image
@@ -289,6 +288,8 @@ COLOR_PRED = "#00E5FF"
 COLOR_BACK_LINE = "#FF1493"
 COLOR_FORWARD_LINE = "#FF8C00"
 ROI_LINEWIDTH = 3.5
+CORRESPONDENCE_ARROW_LW = 2.25
+CORRESPONDENCE_ARROW_HEAD = 14
 
 
 def _add_direction_arrow(
@@ -299,37 +300,27 @@ def _add_direction_arrow(
     y1: float,
     *,
     color: str,
-    linewidth: float = 4,
-    linestyle: str = "solid",
+    linewidth: float = CORRESPONDENCE_ARROW_LW,
     zorder: int = 4,
-    head_scale: float = 22,
-    tail_pad: float = 6,
-    head_pad: float = 12,
-) -> FancyArrowPatch | None:
-    """Directed correspondence arrow in image (data) coordinates."""
-    dx, dy = x1 - x0, y1 - y0
-    length = math.hypot(dx, dy)
-    if length < 1e-3:
-        return None
-    ux, uy = dx / length, dy / length
-    start = (x0 + ux * tail_pad, y0 + uy * tail_pad)
-    end = (x1 - ux * head_pad, y1 - uy * head_pad)
-    if math.hypot(end[0] - start[0], end[1] - start[1]) < 1e-3:
-        start, end = (x0, y0), (x1, y1)
-    arrow = FancyArrowPatch(
-        start,
-        end,
-        arrowstyle="-|>",
-        mutation_scale=head_scale,
-        linewidth=linewidth,
-        linestyle=linestyle,
-        color=color,
+    head_scale: float = CORRESPONDENCE_ARROW_HEAD,
+) -> None:
+    """Arrow from (x0,y0) to (x1,y1); tip ends on the target keypoint."""
+    if math.hypot(x1 - x0, y1 - y0) < 1e-3:
+        return
+    ax.annotate(
+        "",
+        xy=(x1, y1),
+        xytext=(x0, y0),
+        arrowprops=dict(
+            arrowstyle="-|>",
+            color=color,
+            lw=linewidth,
+            mutation_scale=head_scale,
+            shrinkA=0,
+            shrinkB=0,
+        ),
         zorder=zorder,
-        shrinkA=0,
-        shrinkB=0,
     )
-    ax.add_patch(arrow)
-    return arrow
 
 
 def _arrow_legend_handles() -> list[Line2D]:
@@ -338,18 +329,18 @@ def _arrow_legend_handles() -> list[Line2D]:
             [0],
             [0],
             color=COLOR_FORWARD_LINE,
-            lw=4,
+            lw=CORRESPONDENCE_ARROW_LW,
             marker=">",
-            markersize=9,
+            markersize=8,
             label="Forward",
         ),
         Line2D(
             [0],
             [0],
             color=COLOR_BACK_LINE,
-            lw=4,
+            lw=CORRESPONDENCE_ARROW_LW,
             marker=">",
-            markersize=9,
+            markersize=8,
             label="Back",
         ),
     ]
@@ -550,7 +541,7 @@ def save_correspondence_figure(
     roi_iou_pred: Optional[float] = None,
     roi_iou_heatmap: Optional[float] = None,
     roi_iou_peak_sum: Optional[float] = None,
-    line_width: int = 5,
+    line_width: float = CORRESPONDENCE_ARROW_LW,
     experiment_type: str = "",
     experiment_detail: str = "",
     src_exam_id: str = "",
@@ -781,12 +772,8 @@ def save_bidirectional_pair_figure(
     ax.set_xlim(0, 1024)
     ax.set_ylim(512, 0)
 
-    _add_direction_arrow(
-        ax, sx, sy, tx + x_off, ty, color=COLOR_FORWARD_LINE, linewidth=4, zorder=4
-    )
-    _add_direction_arrow(
-        ax, tx + x_off, ty, bx, by, color=COLOR_BACK_LINE, linewidth=4, zorder=4
-    )
+    _add_direction_arrow(ax, sx, sy, tx + x_off, ty, color=COLOR_FORWARD_LINE, zorder=4)
+    _add_direction_arrow(ax, tx + x_off, ty, bx, by, color=COLOR_BACK_LINE, zorder=4)
     ax.scatter(
         [sx, tx + x_off, bx],
         [sy, ty, by],
