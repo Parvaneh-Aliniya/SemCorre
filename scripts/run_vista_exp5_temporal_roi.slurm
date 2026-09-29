@@ -54,7 +54,9 @@ else
   exit 1
 fi
 
-PACK="${PACK:-$SCRATCH/sk_review/roi_overlays_exp5_temporal}"
+unset PACK 2>/dev/null || true
+PACK="$SCRATCH/sk_review/roi_overlays_exp5_temporal"
+export PACK
 SET_JSON="${SET_JSON:-$PROJECT/data/exp_sets/exp5_temporal.json}"
 test -f "$SET_JSON" || { echo "ERROR: missing $SET_JSON"; exit 1; }
 
