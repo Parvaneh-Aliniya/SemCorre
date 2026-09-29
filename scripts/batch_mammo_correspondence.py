@@ -2213,6 +2213,7 @@ Experiment ids (use in --experiments):
         Default: full timeline. Quick test only: --exp5-max-steps 1
   exp6  Same pairs as exp1 (CC↔MLO); use --layers 2 3 4 5 6 (combined mid stack)
   exp7  Same pairs as exp1; layer ablation — run once with --layers 2..10 and once with 7 8 9 10 (baseline)
+  exp8  Same pairs as exp1; noise ablation — compare --noise_level 4, 8, 12 (index into scheduler.timesteps)
 """
 
 
@@ -2347,7 +2348,12 @@ def parse_args():
         ),
     )
     p.add_argument("--num_steps", type=int, default=129)
-    p.add_argument("--noise_level", type=int, default=-8)
+    p.add_argument(
+        "--noise_level",
+        type=int,
+        default=-8,
+        help="Index into ldm.scheduler.timesteps (0=noisiest …). Exp8 review: compare 4, 8, 12.",
+    )
     p.add_argument("--num_opt_iterations", type=int, default=5)
     p.add_argument("--num_iterations", type=int, default=20)
     p.add_argument("--learning_rate", type=float, default=0.0023755632081200314)
@@ -2580,6 +2586,7 @@ def main():
                 "num_opt_iterations": args.num_opt_iterations,
                 "num_iterations": args.num_iterations,
                 "layers": list(args.layers),
+                "noise_level": args.noise_level,
                 "set_json": args.set_json or None,
                 "gt_mode": args.gt_mode,
                 "gt_compare": args.gt_compare,

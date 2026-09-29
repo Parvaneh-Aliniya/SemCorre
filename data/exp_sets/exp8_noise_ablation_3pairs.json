@@ -1,0 +1,21 @@
+{
+  "name": "exp8_noise_ablation_3pairs",
+  "experiment": "exp1",
+  "note": "Exp8: same three review CC↔MLO pairs as layer ablation. Compare scheduler timestep index noise_level 4, 8 (baseline), 12 with layers 7–10. (Batch argparse default is -8 if --noise_level omitted.)",
+  "pair_stems": [
+    "p55757641_ex1253264390909221_r_cc_to_mlo",
+    "p89260406_ex3138061409680673_l_cc_to_mlo",
+    "p58509574_ex6838191166916674_r_mlo_to_cc"
+  ],
+  "exam_specs": [
+    "55757641:2015-04-10",
+    "89260406:2017-08-30",
+    "58509574:2017-05-15"
+  ],
+  "patient_ids": [
+    "55757641",
+    "89260406",
+    "58509574"
+  ],
+  "noise_levels_compare": [4, 8, 12]
+}
