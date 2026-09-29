@@ -164,10 +164,18 @@ def main() -> None:
     args = p.parse_args()
 
     data = json.loads(args.export_json.read_text(encoding="utf-8"))
-    pid = str(data["patient_id"])
     pack_root = args.pack_dir.resolve()
     out_root = args.out_dir.resolve()
     out_root.mkdir(parents=True, exist_ok=True)
+
+    patient_blocks: list[tuple[str, dict]] = []
+    if data.get("patients"):
+        for pid, block in data["patients"].items():
+            patient_blocks.append((str(pid), block))
+    elif data.get("patient_id"):
+        patient_blocks.append((str(data["patient_id"]), {"arms": data.get("arms", {})}))
+    else:
+        raise SystemExit("export JSON needs 'patients' or 'patient_id'")
 
     want_cuda = args.device.startswith("cuda")
     if want_cuda and not torch.cuda.is_available():
@@ -190,58 +198,61 @@ def main() -> None:
     )
 
     summary_rows: list[dict] = []
-    for arm_name, arm in data.get("arms", {}).items():
-        direction = arm.get("chain_direction", "backward")
-        top_k = int(arm.get("top_k", 7))
-        n_k = top_k if args.limit_kpts <= 0 else min(top_k, args.limit_kpts)
-        for bucket, exams in arm.get("buckets", {}).items():
-            lat, view = bucket.split("_", 1)
-            by_date = {e["exam_date"]: e for e in exams}
-            train_date = arm.get("train_exam_date")
-            if not train_date or train_date not in by_date:
-                continue
-            train_xy_list = by_date[train_date]["xy_512"]
-            arm_bucket_dir = out_root / arm_name / bucket
-            for ki in range(n_k):
-                src = train_xy_list[ki]
-                src_xy = (float(src[0]), float(src[1]))
-                chain_dir = arm_bucket_dir / f"kpt_{ki:02d}"
-                sem = _run_kpt_chain(
-                    ldm,
-                    pack_root=pack_root,
-                    patient_id=pid,
-                    lat=lat,
-                    view=view,
-                    anchor_date=train_date,
-                    direction=direction,
-                    src_xy=src_xy,
-                    out_dir=chain_dir,
-                    kpt_idx=ki,
-                    device=device,
-                    hyper=hyper,
-                )
-                for date, sk_row in by_date.items():
-                    sk_pts = sk_row["xy_512"]
-                    if ki >= len(sk_pts):
-                        continue
-                    sk_xy = (float(sk_pts[ki][0]), float(sk_pts[ki][1]))
-                    if date not in sem:
-                        continue
-                    d = _dist(sk_xy, sem[date])
-                    summary_rows.append(
-                        {
-                            "arm": arm_name,
-                            "bucket": bucket,
-                            "kpt_index": ki,
-                            "exam_date": date,
-                            "sk_x": sk_xy[0],
-                            "sk_y": sk_xy[1],
-                            "semcorre_x": sem[date][0],
-                            "semcorre_y": sem[date][1],
-                            "dist_512_px": d,
-                            "is_train_exam": date == train_date,
-                        }
+    for pid, block in patient_blocks:
+        print(f"\n=== Exp10 SemCorre chains patient {pid} ===", flush=True)
+        for arm_name, arm in block.get("arms", {}).items():
+            direction = arm.get("chain_direction", "backward")
+            top_k = int(arm.get("top_k", data.get("top_k", 7)))
+            n_k = top_k if args.limit_kpts <= 0 else min(top_k, args.limit_kpts)
+            for bucket, exams in arm.get("buckets", {}).items():
+                lat, view = bucket.split("_", 1)
+                by_date = {e["exam_date"]: e for e in exams}
+                train_date = arm.get("train_exam_date")
+                if not train_date or train_date not in by_date:
+                    continue
+                train_xy_list = by_date[train_date]["xy_512"]
+                arm_bucket_dir = out_root / f"patient_{pid}" / arm_name / bucket
+                for ki in range(n_k):
+                    src = train_xy_list[ki]
+                    src_xy = (float(src[0]), float(src[1]))
+                    chain_dir = arm_bucket_dir / f"kpt_{ki:02d}"
+                    sem = _run_kpt_chain(
+                        ldm,
+                        pack_root=pack_root,
+                        patient_id=pid,
+                        lat=lat,
+                        view=view,
+                        anchor_date=train_date,
+                        direction=direction,
+                        src_xy=src_xy,
+                        out_dir=chain_dir,
+                        kpt_idx=ki,
+                        device=device,
+                        hyper=hyper,
                     )
+                    for date, sk_row in by_date.items():
+                        sk_pts = sk_row["xy_512"]
+                        if ki >= len(sk_pts):
+                            continue
+                        sk_xy = (float(sk_pts[ki][0]), float(sk_pts[ki][1]))
+                        if date not in sem:
+                            continue
+                        d = _dist(sk_xy, sem[date])
+                        summary_rows.append(
+                            {
+                                "patient_id": pid,
+                                "arm": arm_name,
+                                "bucket": bucket,
+                                "kpt_index": ki,
+                                "exam_date": date,
+                                "sk_x": sk_xy[0],
+                                "sk_y": sk_xy[1],
+                                "semcorre_x": sem[date][0],
+                                "semcorre_y": sem[date][1],
+                                "dist_512_px": d,
+                                "is_train_exam": date == train_date,
+                            }
+                        )
 
     import csv
 
@@ -252,7 +263,14 @@ def main() -> None:
             w.writeheader()
             w.writerows(summary_rows)
     (out_root / "exp10_compare_summary.json").write_text(
-        json.dumps({"patient_id": pid, "n_rows": len(summary_rows), "csv": str(csv_path)}, indent=2),
+        json.dumps(
+            {
+                "n_patients": len(patient_blocks),
+                "n_rows": len(summary_rows),
+                "csv": str(csv_path),
+            },
+            indent=2,
+        ),
         encoding="utf-8",
     )
     print(f"Done: {csv_path} ({len(summary_rows)} rows)", flush=True)

@@ -1,11 +1,11 @@
 #!/bin/bash
-# Exp10: one-patient SK (first vs last train, K=7) + SemCorre kpt chains + distance CSV.
+# Exp10: same patients/chains/pack as Exp5 — SK (first vs last train, K=7) + SemCorre kpt compare.
 #SBATCH -J semcorre_e10
 #SBATCH -N 1
 #SBATCH -n 1
-#SBATCH -t 08:00:00
-#SBATCH -o logs/semcorre_e10_%j.out
-#SBATCH -e logs/semcorre_e10_%j.err
+#SBATCH -t 48:00:00
+#SBATCH -o logs/semcorre_e10_temporal_%j.out
+#SBATCH -e logs/semcorre_e10_temporal_%j.err
 #SBATCH -A ASC26012
 #SBATCH -p gh
 
@@ -17,17 +17,27 @@ SEMCRE=/home1/11364/paliniya/projects/semcorre
 export SCRATCH=/scratch/11364/paliniya
 export EMBED_DATA_DIR="${EMBED_DATA_DIR:-$SCRATCH/embed_dataset/tables}"
 
-PATIENT_ID="${PATIENT_ID:-62877247}"
-PACK="${PACK:-$SCRATCH/sk_review/roi_overlays_exp5_temporal}"
-OUT="$SCRATCH/sk_runs_v2/exp10_p${PATIENT_ID}"
+unset PACK
+PACK="$SCRATCH/sk_review/roi_overlays_exp5_temporal"
+SET_JSON="$SEMCRE/data/exp_sets/exp5_temporal.json"
+OUT="$SCRATCH/sk_runs_v2/vista_exp10_temporal"
 DATASET="$SCRATCH/sk_png_dataset_full"
 
 source "${SK_ENV:-$SCRATCH/stablekeypoints/sk_env}/bin/activate"
 module load gcc cuda 2>/dev/null || true
 
+# Build pack if missing (same as Exp5 SLURM)
+if [[ ! -f "$PACK/roi_coords.csv" ]]; then
+  mapfile -t PIDS < <(python -c "import json; print('\\n'.join(json.load(open('$SET_JSON'))['patient_ids']))")
+  args=()
+  for pid in "${PIDS[@]}"; do args+=(--patient "$pid"); done
+  python -u "$SKP/draw_embed_roi_overlays.py" \
+    --dataset-loc "$DATASET" --out "$PACK" --keep-all-rois "${args[@]}"
+fi
+
 cd "$SKP"
 python -u run_exp10_sk_semcorre_patient.py \
-  --patient-id "$PATIENT_ID" \
+  --set-json "$SET_JSON" \
   --dataset-loc "$DATASET" \
   --pack-dir "$PACK" \
   --out-root "$OUT" \
@@ -35,6 +45,6 @@ python -u run_exp10_sk_semcorre_patient.py \
   --token-file "$SKP/token.txt" \
   --semcorre-repo "$SEMCRE"
 
-echo "Results: $OUT"
-echo "  figures: $OUT/figures/temporal_kpts_no_triangles/"
-echo "  compare: $OUT/semcorre_chains/exp10_sk_vs_semcorre_distances.csv"
+echo "Done: $OUT"
+echo "  cohort export: $OUT/exp10_sk_keypoints.json"
+echo "  compare CSV:   $OUT/semcorre_chains/exp10_sk_vs_semcorre_distances.csv"

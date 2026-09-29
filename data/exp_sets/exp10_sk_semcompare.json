@@ -1,9 +1,15 @@
 {
   "name": "exp10_sk_semcompare",
   "experiment": "exp10",
-  "note": "One patient: SK train-first vs train-last (7 kpts), temporal dot plots, SemCorre kpt chains vs SK locations. Set patient_id and paths in SLURM env.",
-  "patient_id": "62877247",
+  "same_as_exp5_set": "exp5_temporal.json",
+  "note": "Alias: Exp10 cohort = Exp5 temporal (6 patients, same chains/exams). Use exp5_temporal.json or exp10_temporal.json with run_exp10_sk_semcorre_patient.py.",
   "top_k": 7,
-  "pack_hint": "roi_overlays pack with full timeline for that patient (e.g. exp5_temporal or per-patient raw_mammo pack)",
-  "sk_dataset_loc_hint": "/scratch/11364/paliniya/sk_png_dataset_full"
+  "patient_ids": [
+    "11861206",
+    "22359092",
+    "25403261",
+    "33600940",
+    "46673294",
+    "54176985"
+  ]
 }

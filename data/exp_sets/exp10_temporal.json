@@ -1,0 +1,17 @@
+{
+  "name": "exp10_temporal",
+  "experiment": "exp10",
+  "same_as_exp5_set": "exp5_temporal.json",
+  "note": "Exp10 uses the same 6 patients, exam_specs, and lat+view chains as Exp5 (Experiments/themporal). SK: train-first vs train-last, K=7. SemCorre: kpt transfer on roi_overlays_exp5_temporal pack.",
+  "top_k": 7,
+  "patient_ids": [
+    "11861206",
+    "22359092",
+    "25403261",
+    "33600940",
+    "46673294",
+    "54176985"
+  ],
+  "pack_dir_default": "roi_overlays_exp5_temporal",
+  "run_tag_default": "vista_exp10_temporal"
+}
