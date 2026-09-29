@@ -1,0 +1,25 @@
+{
+  "name": "exp_review_layer_ablation_3pairs",
+  "experiment": "exp1",
+  "note": "Three hand-picked Exp1 view-change examples (CC↔MLO only, one direction each). Layer ablation: 2–6, 2–10, vs 7–10 baseline.",
+  "source_review_folders": [
+    "vista_exp1_views/exp1_cc_to_mlo/p55757641_ex1253264390909221_r_cc_to_mlo_really_good",
+    "vista_exp1_views/exp1_cc_to_mlo/p89260406_ex3138061409680673_l_cc_to_mlo_reaaly_good",
+    "vista_exp1_views/exp1_mlo_to_cc/p58509574_ex6838191166916674_r_mlo_to_cc_verygood"
+  ],
+  "pair_stems": [
+    "p55757641_ex1253264390909221_r_cc_to_mlo",
+    "p89260406_ex3138061409680673_l_cc_to_mlo",
+    "p58509574_ex6838191166916674_r_mlo_to_cc"
+  ],
+  "exam_specs": [
+    "55757641:2015-04-10",
+    "89260406:2017-08-30",
+    "58509574:2017-05-15"
+  ],
+  "patient_ids": [
+    "55757641",
+    "89260406",
+    "58509574"
+  ]
+}

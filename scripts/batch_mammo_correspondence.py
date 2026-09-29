@@ -70,7 +70,7 @@ import ast
 import json
 import re
 import sys
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, replace
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -376,6 +376,39 @@ class PairJob:
     stem: str
     src_all_gt_512: list | None = None
     trg_all_gt_512: list | None = None
+
+
+def _exp1_pairs_for_set(
+    records,
+    pack_root: Path,
+    index,
+    exp1_set: set[str],
+    exam_specs: set[tuple[str, str]] | None,
+) -> list[PairJob]:
+    j1 = build_exp1(records, pack_root, index)
+    if exp1_set:
+        j1 = filter_pair_jobs_for_patients(j1, exp1_set)
+    if exam_specs:
+        j1 = filter_pair_jobs_for_exams(j1, exam_specs)
+    return j1
+
+
+def _relabel_exp6_job(job: PairJob) -> PairJob:
+    return replace(
+        job,
+        experiment="exp6_layers_2_6",
+        experiment_label="Experiment 6: DHPF layers 2–6 (combined mid stack)",
+        experiment_detail=f"{job.experiment_detail} | attn layers 2-6",
+    )
+
+
+def _relabel_exp7_job(job: PairJob) -> PairJob:
+    return replace(
+        job,
+        experiment="exp7_layer_ablation",
+        experiment_label="Experiment 7: layer ablation (Exp1 CC↔MLO pairs)",
+        experiment_detail=f"{job.experiment_detail} | layer ablation vs 7-10 baseline",
+    )
 
 
 @dataclass
@@ -1214,8 +1247,21 @@ def load_set_json(path: str | Path) -> dict:
         "exp5_views": views,
         "exp3_groups": data.get("groups") or [],
         "review_patients": data.get("patients") or [],
+        "pair_stems": [str(s).strip() for s in (data.get("pair_stems") or []) if str(s).strip()],
         "raw": data,
     }
+
+
+def filter_pair_jobs_by_stems(jobs: list[PairJob], stems: set[str]) -> list[PairJob]:
+    if not stems:
+        return jobs
+    out = [j for j in jobs if j.stem in stems]
+    missing = stems - {j.stem for j in out}
+    if missing:
+        print("WARNING: pair stem(s) not in planned jobs:", flush=True)
+        for s in sorted(missing):
+            print(f"  missing: {s}", flush=True)
+    return out
 
 
 def filter_pair_jobs_for_exams(
@@ -2165,6 +2211,8 @@ Experiment ids (use in --experiments):
   exp5  chain backward from newest exam; ROI GT from roi_coords (bridge if ROI exam is older)
         Filter chains: --exp5-views PATIENT:LAT:VIEW,...  e.g. 62877247:L:CC
         Default: full timeline. Quick test only: --exp5-max-steps 1
+  exp6  Same pairs as exp1 (CC↔MLO); use --layers 2 3 4 5 6 (combined mid stack)
+  exp7  Same pairs as exp1; layer ablation — run once with --layers 2..10 and once with 7 8 9 10 (baseline)
 """
 
 
@@ -2209,6 +2257,12 @@ def parse_args():
     )
     p.add_argument("--device", type=str, default="cuda:0")
     p.add_argument("--limit", type=int, default=0, help="Max pairs total (0 = all)")
+    p.add_argument(
+        "--pair-stems",
+        type=str,
+        default="",
+        help="Comma-separated pair stems to run (exact job.stem). Also pair_stems in --set-json.",
+    )
     p.add_argument(
         "--exp12-patient",
         type=str,
@@ -2315,7 +2369,13 @@ def parse_args():
     )
     p.add_argument("--crop_percent", type=float, default=93.16549294381423)
     p.add_argument("--flip_prob", type=float, default=0.0)
-    p.add_argument("--layers", type=int, nargs="+", default=[5, 6, 7, 8])
+    p.add_argument(
+        "--layers",
+        type=int,
+        nargs="+",
+        default=[7, 8, 9, 10],
+        help="DHPF attention layers (default 7–10, production setting)",
+    )
     p.add_argument("--model_type", type=str, default="CompVis/stable-diffusion-v1-4")
     p.add_argument("--upsample_res", type=int, default=512)
     p.add_argument(
@@ -2407,14 +2467,22 @@ def main():
         )
         if set_info["exam_specs"]:
             exam_specs = exam_specs | set_info["exam_specs"] if exam_specs else set_info["exam_specs"]
-        if set_info["experiment"] == "exp1" and set_info["patient_ids"]:
+        if set_info["experiment"] in ("exp1", "exp6", "exp7") and set_info["patient_ids"]:
             exp1_set = exp1_set | set_info["patient_ids"] if exp1_set else set_info["patient_ids"]
         if set_info["experiment"] == "exp2" and set_info["patient_ids"]:
             exp2_set = exp2_set | set_info["patient_ids"] if exp2_set else set_info["patient_ids"]
     if "exp1" in want:
-        j1 = build_exp1(records, pack_root, index)
-        j1 = filter_pair_jobs_for_patients(j1, exp1_set) if exp1_set else j1
-        jobs.extend(filter_pair_jobs_for_exams(j1, exam_specs))
+        jobs.extend(_exp1_pairs_for_set(records, pack_root, index, exp1_set, exam_specs))
+    if "exp6" in want:
+        jobs.extend(
+            _relabel_exp6_job(j)
+            for j in _exp1_pairs_for_set(records, pack_root, index, exp1_set, exam_specs)
+        )
+    if "exp7" in want:
+        jobs.extend(
+            _relabel_exp7_job(j)
+            for j in _exp1_pairs_for_set(records, pack_root, index, exp1_set, exam_specs)
+        )
     if "exp2" in want:
         if (
             set_info
@@ -2462,6 +2530,21 @@ def main():
             for c in all_exp5:
                 print(f"    {c.patient_id}  {c.laterality} {c.view}  anchor {c.anchor_date}", flush=True)
 
+    pair_stems: set[str] = set()
+    if args.pair_stems.strip():
+        pair_stems.update(s.strip() for s in args.pair_stems.split(",") if s.strip())
+    if set_info and set_info.get("pair_stems"):
+        pair_stems.update(set_info["pair_stems"])
+    if pair_stems:
+        n_before = len(jobs)
+        jobs = filter_pair_jobs_by_stems(jobs, pair_stems)
+        print(
+            f"Pair stem filter: {len(jobs)} job(s) kept ({n_before} before filter)",
+            flush=True,
+        )
+        for j in jobs:
+            print(f"  • {j.stem}  [{j.experiment}]", flush=True)
+
     if args.limit > 0:
         jobs = jobs[: args.limit]
         chain_jobs = chain_jobs[: args.limit]
@@ -2496,6 +2579,8 @@ def main():
                 "exp5_max_steps": args.exp5_max_steps,
                 "num_opt_iterations": args.num_opt_iterations,
                 "num_iterations": args.num_iterations,
+                "layers": list(args.layers),
+                "set_json": args.set_json or None,
                 "gt_mode": args.gt_mode,
                 "gt_compare": args.gt_compare,
                 "with_tps_warp": args.with_tps_warp,

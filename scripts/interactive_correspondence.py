@@ -1896,7 +1896,7 @@ def parse_args():
     )
     p.add_argument("--crop_percent", type=float, default=93.16549294381423)
     p.add_argument("--flip_prob", type=float, default=0.0)
-    p.add_argument("--layers", type=int, nargs="+", default=[5, 6, 7, 8])
+    p.add_argument("--layers", type=int, nargs="+", default=[7, 8, 9, 10])
     p.add_argument("--model_type", type=str, default="CompVis/stable-diffusion-v1-4")
     p.add_argument("--upsample_res", type=int, default=512)
     p.add_argument(
