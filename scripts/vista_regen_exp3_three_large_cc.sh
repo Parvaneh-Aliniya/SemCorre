@@ -8,8 +8,9 @@
 #   bash scripts/vista_regen_exp3_three_large_cc.sh
 #
 # Optional:
-#   RUN=$SCRATCH/semcorre_batch_outputs/batch_experiments/vista_exp3_cross_roi_box bash ...
+#   EXP3_RUN_ROOT=$SCRATCH/semcorre_batch_outputs/batch_experiments/vista_exp3_cross_roi_box bash ...
 #   NO_ARROWS=0 bash ...              # keep orange/pink arrows
+# Do not rely on shell variable RUN (often set for SK/Exp10) — use EXP3_RUN_ROOT or RUN_TAG.
 #   sbatch scripts/run_vista_regen_exp3_three_large_cc.slurm
 
 set -euo pipefail
@@ -19,7 +20,17 @@ cd "$ROOT"
 
 export SCRATCH="${SCRATCH:-/scratch/11364/paliniya}"
 RUN_TAG="${RUN_TAG:-vista_exp3_cross}"
-RUN_ROOT="${RUN:-$SCRATCH/semcorre_batch_outputs/batch_experiments/$RUN_TAG}"
+DEFAULT_RUN="$SCRATCH/semcorre_batch_outputs/batch_experiments/$RUN_TAG"
+if [[ -n "${EXP3_RUN_ROOT:-}" ]]; then
+  RUN_ROOT="$EXP3_RUN_ROOT"
+elif [[ -n "${RUN:-}" && "$RUN" == *semcorre_batch_outputs* && "$RUN" == *exp3* ]]; then
+  RUN_ROOT="$RUN"
+else
+  if [[ -n "${RUN:-}" ]]; then
+    echo "NOTE: ignoring RUN=$RUN (use EXP3_RUN_ROOT or unset RUN for exp3 batch outputs)."
+  fi
+  RUN_ROOT="$DEFAULT_RUN"
+fi
 PACK="${PACK:-$SCRATCH/sk_review/roi_overlays_exp3_cross}"
 NO_ARROWS="${NO_ARROWS:-1}"
 OUT_DIR="${OUT_DIR:-$SCRATCH/sk_review/exp3_three_large_cc_figures}"
@@ -33,7 +44,13 @@ source "$SEMCRE_VENV/bin/activate"
 python -c "import torch; print('torch OK', torch.__version__)"
 
 BASE="$RUN_ROOT/exp3_cross_patient"
-test -d "$BASE" || { echo "Missing $BASE"; exit 1; }
+if [[ ! -d "$BASE" ]]; then
+  echo "Missing $BASE"
+  echo "Expected SemCorre batch output, e.g.:"
+  echo "  $DEFAULT_RUN/exp3_cross_patient"
+  echo "Fix: unset RUN   OR   export EXP3_RUN_ROOT=$DEFAULT_RUN"
+  exit 1
+fi
 test -f "$PACK/roi_coords.csv" || { echo "Missing pack $PACK/roi_coords.csv"; exit 1; }
 
 PAIRS=(
