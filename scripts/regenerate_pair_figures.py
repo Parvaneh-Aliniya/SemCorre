@@ -44,6 +44,74 @@ RES = 512
 BANNER_H = 80
 
 
+def _strip_review_overlay_colors(arr_hwc: np.ndarray) -> np.ndarray:
+    """Remove figure overlays (ROI boxes, arrows, dotted lines) from a grayscale mammogram panel."""
+    out = arr_hwc.astype(np.float32)
+    if out.max() > 1.01:
+        out /= 255.0
+    r, g, b = out[..., 0], out[..., 1], out[..., 2]
+    mx = np.maximum(np.maximum(r, g), b)
+    mn = np.minimum(np.minimum(r, g), b)
+    spread = mx - mn
+    # Mammograms are nearly gray; any saturated hue is a drawn overlay (incl. anti-aliased arrows).
+    mask = spread > 0.10
+    mask |= (r > g + 0.05) & (r > b + 0.04)
+    mask |= (g > r + 0.05) & (g > b + 0.03)
+    mask |= (b > r + 0.04) & (b > g + 0.04)
+    mask |= (g > 0.52) & (b > 0.52) & (r < 0.42)
+    try:
+        from scipy import ndimage
+
+        mask = ndimage.binary_dilation(mask, iterations=3)
+        cleaned = out.copy()
+        for _ in range(4):
+            smoothed = ndimage.median_filter(cleaned, size=5, mode="nearest")
+            cleaned[mask] = smoothed[mask]
+        return cleaned
+    except ImportError:
+        if not mask.any():
+            return out
+        fill = np.median(out[~mask], axis=0) if (~mask).any() else np.array([0.5, 0.5, 0.5], dtype=np.float32)
+        out[mask] = fill
+        return out
+
+
+def _extract_side_by_side_panels(bidirectional_png: Path) -> tuple[np.ndarray, np.ndarray]:
+    """Crop source|target mammogram panels from a saved bidirectional_pair PNG."""
+    arr = np.asarray(Image.open(bidirectional_png).convert("RGB"), dtype=np.float32) / 255.0
+    gray = arr.mean(axis=2)
+    row_std = arr.std(axis=2).mean(axis=1)
+    mask_rows = (gray < 0.92) & (row_std[:, None] > 0.02)
+    ys = np.where(mask_rows.any(axis=1))[0]
+    if len(ys) == 0:
+        raise ValueError(f"no mammogram band in {bidirectional_png}")
+    y0, y1 = int(ys[0]), int(ys[-1]) + 1
+    band = arr[y0:y1]
+    gband = band.mean(axis=2)
+    col_active = (gband < 0.92).any(axis=0)
+    xs = np.where(col_active)[0]
+    x0, x1 = int(xs[0]), int(xs[-1]) + 1
+    strip = band[:, x0:x1]
+    mid = strip.shape[1] // 2
+    gutter = max(4, int(strip.shape[1] * 0.015))
+    left = _strip_review_overlay_colors(strip[:, : mid - gutter])
+    right = _strip_review_overlay_colors(strip[:, mid + gutter :])
+    seam = max(8, left.shape[1] // 18)
+    if left.shape[1] > seam + 4:
+        fill_l = np.median(left[:, :-seam], axis=(0, 1))
+        left[:, -seam:] = fill_l
+    if right.shape[1] > seam + 4:
+        fill_r = np.median(right[:, seam:], axis=(0, 1))
+        right[:, :seam] = fill_r
+
+    def to_chw(panel: np.ndarray) -> torch.Tensor:
+        im = Image.fromarray((panel * 255.0).astype(np.uint8)).resize((RES, RES), Image.BILINEAR)
+        a = np.asarray(im, dtype=np.float32) / 255.0
+        return torch.from_numpy(a.transpose(2, 0, 1).copy())
+
+    return to_chw(left), to_chw(right)
+
+
 def _load_pt(path: Path) -> dict | None:
     if not path.is_file():
         return None
@@ -255,6 +323,9 @@ def regen_one(
     show_trg_gt: bool = True,
     fig_suffix: str = "",
     overlay_display: bool = False,
+    show_direction_arrows: bool = True,
+    use_figure_panels: bool = False,
+    figure_png: Path | None = None,
 ) -> bool:
     pair_jsons = list(pair_dir.glob("*_pair.json"))
     if not pair_jsons:
@@ -266,14 +337,36 @@ def regen_one(
         print(f"  skip {pair_dir.name}: no {stem}_correspondence_data.pt")
         return False
 
-    if overlay_display and pack_root is not None:
-        src_path = resolve_pack_overlay_path(pack_root, str(meta["src_path"]))
-        trg_path = resolve_pack_overlay_path(pack_root, str(meta["trg_path"]))
+    src_path: Path | None = None
+    trg_path: Path | None = None
+    src_t: torch.Tensor | None = None
+    trg_t: torch.Tensor | None = None
+    bidir_png = figure_png if figure_png is not None else (pair_dir / f"{stem}_bidirectional_pair.png")
+    if use_figure_panels and bidir_png.is_file():
+        src_t, trg_t = _extract_side_by_side_panels(bidir_png)
+        src_path = bidir_png
+        trg_path = bidir_png
     else:
-        src_path = resolve_image_path(meta["src_path"], pack_root=pack_root, reviews_root=reviews_root)
-        trg_path = resolve_image_path(meta["trg_path"], pack_root=pack_root, reviews_root=reviews_root)
-    src_t = batch.load_image_chw(src_path)
-    trg_t = batch.load_image_chw(trg_path)
+        try:
+            if overlay_display and pack_root is not None:
+                src_path = resolve_pack_overlay_path(pack_root, str(meta["src_path"]))
+                trg_path = resolve_pack_overlay_path(pack_root, str(meta["trg_path"]))
+            else:
+                src_path = resolve_image_path(
+                    meta["src_path"], pack_root=pack_root, reviews_root=reviews_root
+                )
+                trg_path = resolve_image_path(
+                    meta["trg_path"], pack_root=pack_root, reviews_root=reviews_root
+                )
+            src_t = batch.load_image_chw(src_path)
+            trg_t = batch.load_image_chw(trg_path)
+        except FileNotFoundError:
+            if bidir_png.is_file():
+                src_t, trg_t = _extract_side_by_side_panels(bidir_png)
+                src_path = bidir_png
+                trg_path = bidir_png
+            else:
+                raise
 
     sx, sy = meta["src_xy_512"]
     est = _est_xy_from_pt(fwd_pt)
@@ -384,6 +477,7 @@ def regen_one(
             experiment_type=meta.get("experiment_label", ""),
             experiment_detail=meta.get("experiment_detail", ""),
             show_trg_gt=False,
+            show_direction_arrows=show_direction_arrows,
         )
         return True
 
@@ -411,6 +505,7 @@ def regen_one(
         center_error=center_err,
         show_trg_gt=show_trg_gt,
         show_src_gt=True,
+        show_direction_arrows=show_direction_arrows,
     )
 
     if rt_kw is None:
@@ -440,6 +535,7 @@ def regen_one(
         experiment_type=meta.get("experiment_label", ""),
         experiment_detail=meta.get("experiment_detail", ""),
         show_trg_gt=True,
+        show_direction_arrows=show_direction_arrows,
     )
 
     rt_pt = rt_kw["rt_pt"]
@@ -505,6 +601,28 @@ def main() -> None:
         action="store_true",
         help="Use pack ROI-overlay PNGs (red ROI on mammo) for figure panels.",
     )
+    p.add_argument(
+        "--no-direction-arrows",
+        action="store_true",
+        help="Omit orange forward / pink back correspondence arrows (keep ROI boxes + cyan center lines).",
+    )
+    p.add_argument(
+        "--use-figure-panels",
+        action="store_true",
+        help="Crop mammogram panels from existing *_bidirectional_pair.png (no pack/reviews PNGs).",
+    )
+    p.add_argument(
+        "--pair-dir",
+        type=str,
+        default="",
+        help="Redraw only this pair folder (still walks --run-root if unset).",
+    )
+    p.add_argument(
+        "--figure-png",
+        type=str,
+        default="",
+        help="Use this bidirectional PNG for --use-figure-panels (e.g. archived copy with arrows).",
+    )
     args = p.parse_args()
     fig_suffix = args.fig_suffix
     if args.no_trg_gt and not fig_suffix and not args.in_place:
@@ -515,19 +633,28 @@ def main() -> None:
     run_root = Path(args.run_root).expanduser().resolve()
     pack_root = Path(args.pack_dir).expanduser().resolve() if args.pack_dir else None
     reviews_root = Path(args.reviews_dir).expanduser().resolve() if args.reviews_dir else None
-    if pack_root is None and reviews_root is None:
-        raise SystemExit("Need --pack-dir and/or --reviews-dir")
+    use_figure_panels = args.use_figure_panels
+    if pack_root is None and reviews_root is None and not use_figure_panels:
+        raise SystemExit("Need --pack-dir and/or --reviews-dir (or --use-figure-panels)")
 
-    n_ok = 0
-    for pair_dir in sorted(run_root.rglob("*")):
-        if not pair_dir.is_dir():
-            continue
-        if args.patient:
-            rel = str(pair_dir.relative_to(run_root)).replace("\\", "/")
-            if args.patient not in rel and args.patient not in pair_dir.name:
+    pair_dirs: list[Path]
+    if args.pair_dir:
+        pair_dirs = [Path(args.pair_dir).expanduser().resolve()]
+    else:
+        pair_dirs = []
+        for pair_dir in sorted(run_root.rglob("*")):
+            if not pair_dir.is_dir():
                 continue
-        if not list(pair_dir.glob("*_pair.json")):
-            continue
+            if args.patient:
+                rel = str(pair_dir.relative_to(run_root)).replace("\\", "/")
+                if args.patient not in rel and args.patient not in pair_dir.name:
+                    continue
+            if list(pair_dir.glob("*_pair.json")):
+                pair_dirs.append(pair_dir)
+
+    figure_png = Path(args.figure_png).expanduser().resolve() if args.figure_png else None
+    n_ok = 0
+    for pair_dir in pair_dirs:
         try:
             if regen_one(
                 pair_dir,
@@ -536,6 +663,9 @@ def main() -> None:
                 show_trg_gt=show_trg_gt,
                 fig_suffix=fig_suffix,
                 overlay_display=overlay_display,
+                show_direction_arrows=not args.no_direction_arrows,
+                use_figure_panels=use_figure_panels,
+                figure_png=figure_png,
             ):
                 n_ok += 1
                 print("redrew", pair_dir.relative_to(run_root))

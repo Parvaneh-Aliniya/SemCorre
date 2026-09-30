@@ -550,6 +550,7 @@ def save_correspondence_figure(
     show_trg_gt: bool = True,
     show_src_gt: bool = True,
     roundtrip_src_kp: Optional[tuple[float, float]] = None,
+    show_direction_arrows: bool = True,
 ):
     """Side-by-side: green GT, blue pred. ``show_trg_gt=False`` hides target green GT overlays only (pred ROI, IoU, center dist stay)."""
     display = torch.cat([src_display, trg_display], dim=2).permute(1, 2, 0).detach().cpu().numpy()
@@ -589,21 +590,25 @@ def save_correspondence_figure(
     ax.imshow(display, aspect="equal")
     ax.set_xlim(0, 1024)
     ax.set_ylim(512, 0)
-    _add_direction_arrow(
-        ax, sx, sy, tx + x_off, ty, color=COLOR_FORWARD_LINE, linewidth=line_width, zorder=4
-    )
-    scatter_x = [sx, tx + x_off]
-    scatter_y = [sy, ty]
-    scatter_c = [COLOR_FORWARD_LINE, COLOR_FORWARD_LINE]
-    if roundtrip_src_kp is not None:
-        bx, by = roundtrip_src_kp
+    scatter_x: list[float] = []
+    scatter_y: list[float] = []
+    scatter_c: list[str] = []
+    if show_direction_arrows:
         _add_direction_arrow(
-            ax, tx + x_off, ty, bx, by, color=COLOR_BACK_LINE, linewidth=line_width, zorder=4
+            ax, sx, sy, tx + x_off, ty, color=COLOR_FORWARD_LINE, linewidth=line_width, zorder=4
         )
-        scatter_x.append(bx)
-        scatter_y.append(by)
-        scatter_c.append(COLOR_BACK_LINE)
-    ax.scatter(scatter_x, scatter_y, c=scatter_c, s=40, zorder=5)
+        scatter_x = [sx, tx + x_off]
+        scatter_y = [sy, ty]
+        scatter_c = [COLOR_FORWARD_LINE, COLOR_FORWARD_LINE]
+        if roundtrip_src_kp is not None:
+            bx, by = roundtrip_src_kp
+            _add_direction_arrow(
+                ax, tx + x_off, ty, bx, by, color=COLOR_BACK_LINE, linewidth=line_width, zorder=4
+            )
+            scatter_x.append(bx)
+            scatter_y.append(by)
+            scatter_c.append(COLOR_BACK_LINE)
+        ax.scatter(scatter_x, scatter_y, c=scatter_c, s=40, zorder=5)
 
     src_boxes: list = []
     if show_src_gt:
@@ -755,6 +760,7 @@ def save_bidirectional_pair_figure(
     experiment_type: str = "",
     experiment_detail: str = "",
     show_trg_gt: bool = True,
+    show_direction_arrows: bool = True,
 ) -> None:
     """One row: source | target — forward (orange) + back (hot pink) with GT/pred ROIs."""
     if back_roi_iou is None:
@@ -810,15 +816,16 @@ def save_bidirectional_pair_figure(
     ax.set_xlim(0, 1024)
     ax.set_ylim(512, 0)
 
-    _add_direction_arrow(ax, sx, sy, tx + x_off, ty, color=COLOR_FORWARD_LINE, zorder=4)
-    _add_direction_arrow(ax, tx + x_off, ty, bx, by, color=COLOR_BACK_LINE, zorder=4)
-    ax.scatter(
-        [sx, tx + x_off, bx],
-        [sy, ty, by],
-        c=[COLOR_FORWARD_LINE, COLOR_FORWARD_LINE, COLOR_BACK_LINE],
-        s=45,
-        zorder=5,
-    )
+    if show_direction_arrows:
+        _add_direction_arrow(ax, sx, sy, tx + x_off, ty, color=COLOR_FORWARD_LINE, zorder=4)
+        _add_direction_arrow(ax, tx + x_off, ty, bx, by, color=COLOR_BACK_LINE, zorder=4)
+        ax.scatter(
+            [sx, tx + x_off, bx],
+            [sy, ty, by],
+            c=[COLOR_FORWARD_LINE, COLOR_FORWARD_LINE, COLOR_BACK_LINE],
+            s=45,
+            zorder=5,
+        )
 
     src_boxes = list(src_all_gt_boxes or [])
     if src_gt_box is not None and not any(_boxes_close(src_gt_box, b) for b in src_boxes):
@@ -855,8 +862,9 @@ def save_bidirectional_pair_figure(
 
     ax.set_axis_off()
     roi_handles, roi_labels = ax.get_legend_handles_labels()
+    legend_handles = (_arrow_legend_handles() if show_direction_arrows else []) + roi_handles
     ax.legend(
-        handles=_arrow_legend_handles() + roi_handles,
+        handles=legend_handles,
         loc="lower center",
         bbox_to_anchor=(0.5, -0.06),
         ncol=5,
